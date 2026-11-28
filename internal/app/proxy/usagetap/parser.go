@@ -89,6 +89,10 @@ type Parser struct {
 	responses                              map[string]Usage
 	wsStarts                               map[string]struct{}
 	mistral                                bool // First-party Mistral Chat Completions usage semantics.
+	diagnostics                            responseDiagnostics
+	diagnosticEventInvalid                 bool
+	diagnosticResponseIDs                  map[string]struct{}
+	transportComplete                      bool
 	venice                                 *veniceCharge
 }
 
@@ -295,7 +299,7 @@ func ordinaryResponseEvent(data []byte) bool {
 	var event struct {
 		Type string `json:"type"`
 	}
-	return jsonv2.Unmarshal(data, &event) == nil && event.Type != "" && !terminalResponseType(event.Type)
+	return jsonv2.Unmarshal(data, &event) == nil && event.Type != "" && !diagnosticTerminalResponseType(event.Type)
 }
 
 // Snapshot returns current evidence without closing the observer. Evidence is
@@ -352,6 +356,7 @@ func (p *Parser) Finish(complete bool) Usage {
 	}
 	p.buf = nil
 	p.event = nil
+	p.transportComplete = complete
 	p.finished = true
 	return p.Snapshot()
 }

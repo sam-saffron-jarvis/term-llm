@@ -24,8 +24,8 @@ func TestProxyDiagnosticsNeverProbeLocalLoginOrPrintScopedToken(t *testing.T) {
 	if p := byName["openai"]; p.Routing != "proxy_configured" || p.ProxyRoute != "https://proxy.example.test/openai" || p.RequiresKey || p.EnvVar != "" {
 		t.Fatalf("wrong delegated status: %+v", p)
 	}
-	if p := byName["cursor-bin"]; p.Routing != "proxy_blocked" || !strings.Contains(p.ProxyGate, "unsupported") {
-		t.Fatalf("gate hidden: %+v", p)
+	if p := byName["cursor-bin"]; p.Configured || p.Routing != "proxy_blocked" || !strings.Contains(p.ProxyGate, "unsupported") {
+		t.Fatalf("gate shown as selectable or hidden in diagnostics: %+v", p)
 	}
 	if byName["gemini"].Routing != "direct_exception" {
 		t.Fatal("direct custody exception hidden")

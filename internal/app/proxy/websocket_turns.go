@@ -46,6 +46,8 @@ func (s *Service) logWebSocketTurns(resp *http.Response, connection Record, rout
 
 func webSocketTurnRecord(connection Record, turn usagetap.WebSocketTurn) Record {
 	rec := connection
+	// HTTP handshake settings cannot be correlated with individual WS turns.
+	rec.RequestMeta = nil
 	rec.ID = randomToken("px_")[:35]
 	rec.Seq = 0
 	rec.WebSocketConnectionID = connection.ID
@@ -53,6 +55,7 @@ func webSocketTurnRecord(connection Record, turn usagetap.WebSocketTurn) Record 
 	rec.Started, rec.Ended = turn.Started.UnixMilli(), turn.Ended.UnixMilli()
 	rec.Outcome = turn.Outcome
 	rec.Usage = &ObservedUsage{Usage: turn.Usage, Protocol: usagetap.Responses}
+	rec.ResponseMeta = turn.ResponseMeta
 	// The handshake and wire counters describe the connection, not this turn.
 	rec.UpstreamID, rec.HeaderMS, rec.FirstByteMS, rec.Sent, rec.Received = "", -1, -1, -1, -1
 	rec.TotalMS = -1

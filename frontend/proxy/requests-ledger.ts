@@ -277,6 +277,7 @@ export function requestGroups(requests: ProxyRequest[]): ProxyRequest[][] {
             request.status,
             request.outcome,
             request.usage?.usage?.model,
+            request.request_meta?.model || '',
           ])
         : '';
     if (key && key === previous) groups.at(-1)!.push(request);

@@ -195,11 +195,29 @@ not requests already dispatched.
 
 Requests use a compact aligned ledger: time, status, model, client, total input,
 output, cache-read share, duration and price. Local calendar-day headings and
-24-hour times replace repeated full timestamps. Narrow layouts use three lines;
-full paths, raw token counters, IDs, bytes and first-byte timing stay in expandable
-details. Total input includes cache components for Messages/Bedrock, but never
+24-hour times replace repeated full timestamps. Responsive density decreases progressively: 833–1024px combines time/status while
+retaining client/cache; 641–832px places inline client/route beneath the model; at 640px and below a
+compact wrapping facts group keeps output/thinking together. Full paths, raw
+counters, IDs, bytes and first-byte timing stay in expandable details. Total input includes cache components for Messages/Bedrock, but never
 adds them again to inclusive OpenAI/Gemini input. Unknown counters/prices are not
 zero. Plan API-equivalent estimates remain distinct from actual spending.
+
+With `usage: auto`, supported HTTP JSON inference bodies are passively observed
+under a 1 MiB/depth-64 budget. Expanding a row immediately shows **Requested**
+settings, independent **Response** facts and aligned metadata below a divider;
+there are no nested settings/technical disclosures. Legacy, unsupported, invalid
+and truncated request settings are not provider defaults. Explicit zero/false
+remain values, and documented dynamic/unlimited budgets are labeled as such.
+Only positive trustworthy thinking counts earn a summary subline (`5.1k think`,
+never a plus or unknown/zero placeholder). OpenAI thinking is included in output;
+Gemini thoughts are additional, as indicated by detail labels/tooltips. Effort
+summaries are values alone. Finite finish reasons and bounded mixed candidates
+never replace transport errors/interruption with a successful completion label.
+The request probe retains no prompts, tool identities/schemas, cache keys or
+provider IDs, and never affects usage accounting or frozen prices. WebSocket
+request-setting correlation, true TTFT and output rates remain deferred. **First
+byte** is response-byte timing, never TTFT. Raw capture keeps its separate explicit
+access and security controls.
 
 Only consecutive identical HTTP errors without measured usage or prices collapse
 into expandable groups, within the loaded page. Group time/latency describe the
@@ -244,7 +262,7 @@ standalone bundle into scratch space and point Playwright at it:
 
 ```sh
 (cd frontend && npx vite build --config vite.proxy.config.ts --outDir ../tmp/proxy-native-dist)
-(cd frontend && TERM_LLM_PROXY_DIST="$PWD/../tmp/proxy-native-dist" npx playwright test e2e/proxy-layout.spec.ts --project=desktop)
+(cd frontend && TERM_LLM_PROXY_DIST="$PWD/../tmp/proxy-native-dist" npx playwright test e2e/proxy-layout.spec.ts e2e/proxy-request-insights.spec.ts --project=desktop --project=mobile)
 ```
 
 The separate Vite test configuration covers `proxy/`; the chat suite covers

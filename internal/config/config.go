@@ -130,6 +130,7 @@ type ProviderConfig struct {
 
 	Proxy                     *ProviderProxyConfig  `mapstructure:"proxy" yaml:"proxy,omitempty"`
 	ProxyBinding              string                `mapstructure:"-" yaml:"-"` // Runtime route or fail-closed transport gate.
+	proxyRouteMissing         bool                  `mapstructure:"-" yaml:"-"` // Bound to the fail-closed endpoint instead of an advertised route.
 	APIKey                    string                `mapstructure:"api_key"`
 	Model                     string                `mapstructure:"model"`
 	FastModel                 string                `mapstructure:"fast_model"`                  // Lightweight model for control-plane tasks

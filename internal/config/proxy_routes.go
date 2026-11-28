@@ -143,6 +143,7 @@ func (c *Config) bindProxyInference(root, token string, inference map[string]dis
 		if err != nil {
 			return nil, err
 		}
+		pc.proxyRouteMissing = !advertised
 		c.Providers[name] = pc
 		if binding.Root == "" {
 			continue

@@ -1006,7 +1006,7 @@ for (const width of [1440, 320]) {
   });
 }
 
-for (const width of [1440, 1024, 768, 390, 320]) {
+for (const width of [1440, 1024, 833, 832, 641, 640, 390, 320]) {
   test(`request ledger aligns metrics and expands grouped failures at ${width}px`, async ({
     page,
   }, testInfo) => {
@@ -1034,10 +1034,10 @@ for (const width of [1440, 1024, 768, 390, 320]) {
                     source: 'reported',
                     model: openai ? 'gpt-5.5' : 'claude-haiku-5-5',
                     input: openai ? 1000 : i === 0 ? 2 : i === 1 ? 14 : 0,
-                    output: i === 0 ? 19 : i === 1 ? 846 : 0,
+                    output: openai ? 7000 : i === 0 ? 19 : i === 1 ? 846 : 0,
                     cached_input: openai ? 750 : i === 1 ? 36098 : 0,
                     cache_write: openai ? -1 : i === 0 ? 36098 : 0,
-                    reasoning: -1,
+                    reasoning: openai ? 5100 : -1,
                     total: -1,
                     turns: 1,
                     tier: 'standard',
@@ -1066,6 +1066,30 @@ for (const width of [1440, 1024, 768, 390, 320]) {
               first_byte_ms: 210,
               upstream_id: '',
               usage,
+              request_meta: failed
+                ? undefined
+                : {
+                    state: 'observed',
+                    model: 'requested-model',
+                    reasoning_effort: 'high',
+                    output_limit: 20000,
+                    temperature: 0,
+                    top_p: 0,
+                    stream: false,
+                    tool_choice: 'auto',
+                    parallel_tools: false,
+                    declared_tools: 0,
+                    reasoning_mode: 'pro',
+                    reasoning_context: 'current_turn',
+                    verbosity: 'low',
+                    multi_agent: false,
+                    agent_limit: 3,
+                    cache_mode: 'explicit',
+                    cache_ttl: '30m',
+                  },
+              response_meta: failed
+                ? undefined
+                : { state: 'observed', finish: openai ? 'length' : 'end_turn' },
               money: failed
                 ? { billing: 'pay_as_you_go', kind: 'unmeasured' }
                 : {
@@ -1107,9 +1131,7 @@ for (const width of [1440, 1024, 768, 390, 320]) {
     const wide = width > 1024;
     if (wide) {
       // Layout follows width; touch devices retain larger hit targets.
-      expect((await first.boundingBox())!.height).toBeLessThanOrEqual(
-        testInfo.project.use.isMobile ? 52 : 40,
-      );
+      expect((await first.boundingBox())!.height).toBeLessThanOrEqual(60);
       for (const name of ['input', 'output', 'cache', 'duration', 'price']) {
         const edges = await page
           .locator(`.request-row > .request-${name}`)
@@ -1117,13 +1139,18 @@ for (const width of [1440, 1024, 768, 390, 320]) {
         expect(Math.max(...edges) - Math.min(...edges)).toBeLessThan(1);
       }
     } else {
-      expect((await first.boundingBox())!.height).toBeLessThanOrEqual(76);
-      await expect(first.locator('.request-mobile-usage')).toBeVisible();
-      await expect(first.locator('.request-input')).not.toBeVisible();
+      expect((await first.boundingBox())!.height).toBeLessThanOrEqual(width <= 320 ? 96 : 76);
+      if (width <= 640) {
+        await expect(first.locator('.request-mobile-usage')).toBeVisible();
+        await expect(first.locator('.request-input')).not.toBeVisible();
+      } else {
+        await expect(first.locator('.request-input')).toBeVisible();
+        await expect(first.locator('.request-cache')).toBeVisible({ visible: width > 832 });
+      }
     }
     const fallback = page.locator('.request-row').nth(3);
     await expect(fallback.locator('.request-open')).toHaveText('POST /venice/chat/completions');
-    if (wide) {
+    if (width > 640) {
       await expect(fallback.locator('.request-input')).toHaveText('~113.11K');
       await expect(fallback.locator('.request-output')).toHaveText('~5.06K');
     } else {
@@ -1138,6 +1165,33 @@ for (const width of [1440, 1024, 768, 390, 320]) {
     await expect(first.locator('.request-detail')).toBeVisible();
     await expect(first.locator('.request-detail')).toContainText('Cache write');
     await expect(first.locator('.request-detail')).toContainText('No raw payload capture');
+    const detail = first.locator('.request-detail');
+    await expect(detail.getByRole('heading', { name: 'Requested', exact: true })).toBeVisible();
+    await expect(detail.getByRole('heading', { name: 'Response', exact: true })).toBeVisible();
+    await expect(detail).toContainText('RequestedModelrequested-model');
+    await expect(detail).toContainText('Reasoning scope');
+    await expect(detail).toContainText('Agent limit');
+    await expect(detail.locator('details')).toHaveCount(0);
+    const requestedValue = detail
+      .locator('.request-insights-grid > div')
+      .first()
+      .locator('dd')
+      .first();
+    const metadataValue = detail.locator('.request-meta dd').first();
+    expect(
+      Math.abs((await requestedValue.boundingBox())!.x - (await metadataValue.boundingBox())!.x),
+    ).toBeLessThan(1);
+    const thought = page
+      .locator('.request-row')
+      .nth(2)
+      .locator(width <= 640 ? '.request-compact-thinking' : '.request-thinking');
+    await expect(thought).toHaveText('5.1k think');
+    await expect(first.locator('.request-thinking')).toHaveCount(0);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(
+      true,
+    );
+    await page.screenshot({ path: testInfo.outputPath(`insights-${width}.png`), fullPage: true });
+
     await expect(first.getByRole('heading', { name: 'Request details' })).toBeFocused();
     await page.keyboard.press('Escape');
     await expect(first.locator('.request-detail')).toHaveCount(0);

@@ -411,7 +411,48 @@ export interface ProxyObservedUsage {
     turns?: number;
   };
 }
+/** Passive HTTP settings, never billing inputs. Missing legacy metadata is unobserved. */
+export interface ProxyRequestMetadata {
+  state: 'observed' | 'not_observed' | 'unsupported' | 'truncated' | 'invalid';
+  protocol?: string;
+  model?: string;
+  reasoning_effort?: string;
+  reasoning_mode?: string;
+  reasoning_context?: string;
+  reasoning_summary?: string;
+  thinking_mode?: string;
+  thinking_budget?: number;
+  thinking_budget_mode?: 'dynamic';
+  output_limit?: number;
+  output_limit_mode?: 'unlimited' | 'context';
+  service_tier?: string;
+  temperature?: number;
+  top_p?: number;
+  stream?: boolean;
+  verbosity?: string;
+  tool_choice?: string;
+  parallel_tools?: boolean;
+  declared_tools?: number;
+  multi_agent?: boolean;
+  agent_limit?: number;
+  cache_mode?: string;
+  cache_ttl?: string;
+}
+/** Finite provider diagnostics, separate from usage/price and HTTP outcome. */
+export interface ProxyResponseMetadata {
+  state: 'observed' | 'partial';
+  status?: string;
+  finish?: string;
+  incomplete_reason?: string;
+  choices?: { index: number; reason: string }[];
+  cache_write_5m?: number;
+  cache_write_1h?: number;
+  web_search_requests?: number;
+  web_fetch_requests?: number;
+}
 export interface ProxyRequest {
+  request_meta?: ProxyRequestMetadata;
+  response_meta?: ProxyResponseMetadata;
   usage?: ProxyObservedUsage;
   money?: ProxyMoney;
   id: string;

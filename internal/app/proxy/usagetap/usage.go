@@ -114,6 +114,7 @@ func (p *Parser) feedEvent(data []byte, turns *webSocketTurns) {
 		p.MarkUnknown()
 		return
 	}
+	p.observeDiagnostics(data, o)
 	switch p.protocol {
 	case Responses:
 		p.response(o, turns)
@@ -223,7 +224,9 @@ func (p *Parser) response(o object, turns *webSocketTurns) {
 			if turns != nil {
 				response := obj(o["response"])
 				u, bad := readOpenAIUsage(response, true)
-				turns.end(textValue(response["id"]), "incomplete", u, bad)
+				diagnostics := responseDiagnosticsFor(response, typ)
+				diagnostics.invalid = diagnostics.invalid || p.diagnosticEventInvalid
+				turns.end(textValue(response["id"]), "incomplete", u, bad, diagnostics.snapshot(true))
 			}
 		case "error":
 			p.partial = true
@@ -245,6 +248,8 @@ func (p *Parser) response(o object, turns *webSocketTurns) {
 		p.wsStarts != nil && status != "" && status != "completed" {
 		p.partial = true
 	}
+	diagnostics := responseDiagnosticsFor(o, typ)
+	diagnostics.invalid = diagnostics.invalid || p.diagnosticEventInvalid
 	u, bad := readOpenAIUsage(o, true)
 	p.bad = p.bad || bad
 	hasUsage := hasCounts(u)
@@ -260,7 +265,7 @@ func (p *Parser) response(o object, turns *webSocketTurns) {
 		p.recordResponse(id, u)
 	}
 	if observeTurn {
-		turns.end(id, webSocketTurnOutcome(typ, status), u, bad)
+		turns.end(id, webSocketTurnOutcome(typ, status), u, bad, diagnostics.snapshot(true))
 	}
 }
 

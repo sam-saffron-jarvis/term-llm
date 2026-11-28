@@ -57,6 +57,24 @@ func TestProviderConfiguredVia(t *testing.T) {
 	}
 }
 
+func TestProviderCompletionsOmitGatedProxyBindings(t *testing.T) {
+	cfg := &config.Config{
+		DefaultProvider: "cursor-bin",
+		Providers: map[string]config.ProviderConfig{
+			"cursor-bin": {ProxyBinding: "gated:unsupported delegation"},
+			"openai":     {ProxyBinding: "https://proxy.example.test/openai"},
+		},
+	}
+	for _, prefix := range []string{"cursor", "cursor-bin:"} {
+		if got := GetProviderCompletions(prefix, false, cfg); len(got) != 0 {
+			t.Errorf("completion for %q = %v, want none", prefix, got)
+		}
+	}
+	if !ProviderSelectable(cfg, "openai") {
+		t.Fatal("advertised proxy route should still be selectable")
+	}
+}
+
 func TestProviderCredentialCache_ReusesProbesUntilTTL(t *testing.T) {
 	now := time.Unix(1_000, 0)
 	calls := 0

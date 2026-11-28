@@ -15,7 +15,7 @@ import (
 
 // Info describes a provider for external consumption
 type Info struct {
-	Routing    string `json:"routing,omitempty"` // proxy_configured, proxy_blocked or direct_exception
+	Routing    string `json:"routing,omitempty"` // proxy_configured, proxy_unavailable, proxy_blocked or direct_exception
 	ProxyRoute string `json:"proxy_route,omitempty"`
 	ProxyGate  string `json:"proxy_gate,omitempty"`
 
@@ -150,6 +150,9 @@ func newInfo(cfg *config.Config, name string, spec config.ProviderSpec, hasLocal
 			case strings.HasPrefix(pc.ProxyBinding, "gated:"):
 				info.Routing, info.ProxyGate = "proxy_blocked", strings.TrimPrefix(pc.ProxyBinding, "gated:")
 				info.RequiresKey, info.EnvVar = false, ""
+			case cfg.ProviderProxyUnavailable(name):
+				info.Routing, info.ProxyRoute = "proxy_unavailable", pc.ProxyBinding
+				info.RequiresKey, info.EnvVar = false, ""
 			case pc.ProxyBinding != "":
 				info.Routing, info.ProxyRoute = "proxy_configured", pc.ProxyBinding
 				info.RequiresKey, info.EnvVar = false, ""
@@ -187,7 +190,11 @@ func showProviderDetails(opts Options, name string, providers []Info) error {
 	if provider.Routing != "" {
 		fmt.Fprintf(w, "  Routing:        %s\n", providerSourceLabel(*provider))
 		if provider.ProxyRoute != "" {
-			fmt.Fprintf(w, "  Proxy route:    %s (grants/connectivity not checked)\n", provider.ProxyRoute)
+			routeNote := "grants/connectivity not checked"
+			if provider.Routing == "proxy_unavailable" {
+				routeNote = "no route advertised; direct fallback disabled"
+			}
+			fmt.Fprintf(w, "  Proxy route:    %s (%s)\n", provider.ProxyRoute, routeNote)
 		}
 		if provider.ProxyGate != "" {
 			fmt.Fprintf(w, "  Proxy blocked:  %s\n", provider.ProxyGate)
@@ -278,24 +285,27 @@ func providerNextStep(name, mode string) string {
 	return spec.SetupHint()
 }
 
-// writeProvidersText renders the provider list as two sections: providers
-// that can be selected (with where their setup came from) and built-ins that
-// are not set up yet (with the step that would set them up). Input order is
-// preserved; BuildList sorts by name.
-func writeProvidersText(w io.Writer, providers []Info, defaultProvider, mode string, configuredOnly bool) {
-	var configured, available, disabled []Info
-	nameWidth := len("PROVIDER")
+// splitProviderList groups provider diagnostics by their next step, preserving
+// the order of the input. BuildList sorts by name.
+func splitProviderList(providers []Info) (configured, available, unavailable, disabled []Info, nameWidth int) {
+	nameWidth = len("PROVIDER")
 	for _, p := range providers {
 		switch {
 		case p.Disabled:
 			disabled = append(disabled, p)
 		case p.Configured:
 			configured = append(configured, p)
+		case p.Routing == "proxy_unavailable" || p.Routing == "proxy_blocked":
+			unavailable = append(unavailable, p)
 		default:
 			available = append(available, p)
 		}
 		nameWidth = max(nameWidth, len(p.Name))
 	}
+	return configured, available, unavailable, disabled, nameWidth
+}
+
+func writeProvidersText(w io.Writer, providers []Info, defaultProvider, mode string, configuredOnly bool) {
 	if len(providers) == 0 {
 		if configuredOnly {
 			fmt.Fprintln(w, "No configured providers found.")
@@ -305,6 +315,7 @@ func writeProvidersText(w io.Writer, providers []Info, defaultProvider, mode str
 		return
 	}
 
+	configured, available, unavailable, disabled, nameWidth := splitProviderList(providers)
 	row := func(marker, name string, cols ...string) {
 		line := marker + name + strings.Repeat(" ", nameWidth-len(name))
 		for _, col := range cols {
@@ -338,8 +349,18 @@ func writeProvidersText(w io.Writer, providers []Info, defaultProvider, mode str
 			row("  ", p.Name, providerNextStep(p.Name, mode))
 		}
 	}
-	if len(disabled) > 0 {
+	if len(unavailable) > 0 {
 		if len(configured)+len(available) > 0 {
+			fmt.Fprintln(w)
+		}
+		fmt.Fprintln(w, "Unavailable through proxy:")
+		row("  ", "PROVIDER", "STATUS")
+		for _, p := range unavailable {
+			row("  ", p.Name, providerSourceLabel(p))
+		}
+	}
+	if len(disabled) > 0 {
+		if len(configured)+len(available)+len(unavailable) > 0 {
 			fmt.Fprintln(w)
 		}
 		fmt.Fprintln(w, "Disabled:")
@@ -364,6 +385,8 @@ func providerSourceLabel(p Info) string {
 	switch p.Routing {
 	case "proxy_configured":
 		return "trusted proxy (configured only)"
+	case "proxy_unavailable":
+		return "no route advertised to this client"
 	case "proxy_blocked":
 		return "proxy blocked (see provider details)"
 	case "direct_exception":

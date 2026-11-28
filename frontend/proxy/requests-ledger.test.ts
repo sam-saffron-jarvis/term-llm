@@ -383,3 +383,10 @@ describe('consecutive unmeasured HTTP error grouping', () => {
     expect(requestGroups([row, row])).toHaveLength(2);
   });
 });
+
+it('does not group unmeasured errors for different requested models', () => {
+  const error = { ...request(), status: 400, outcome: 'http_error', usage: undefined };
+  const a = { ...error, request_meta: { state: 'observed' as const, model: 'model-a' } };
+  const b = { ...error, request_meta: { state: 'observed' as const, model: 'model-b' } };
+  expect(requestGroups([a, b, b]).map((group) => group.length)).toEqual([1, 2]);
+});

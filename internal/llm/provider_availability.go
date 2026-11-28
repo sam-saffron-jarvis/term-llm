@@ -59,9 +59,10 @@ var availabilityProbes = map[providerspec.Availability]func() bool{
 
 // ProviderSelectable reports whether name may be offered for selection (for
 // example in --provider completion) without running local login probes:
-// any non-disabled provider under auto, otherwise only enabled ones.
+// any non-disabled provider under auto, otherwise only enabled ones. Missing
+// or gated proxy routes are never suggested.
 func ProviderSelectable(cfg *config.Config, name string) bool {
-	return !cfg.ProviderDisabled(name) && cfg.ProviderNotEnabledError(name) == nil
+	return !cfg.ProviderDisabled(name) && !cfg.ProviderProxyUnavailable(name) && cfg.ProviderNotEnabledError(name) == nil
 }
 
 // ProviderCredentialCacheTTL bounds how long a sign-in or sign-out of a

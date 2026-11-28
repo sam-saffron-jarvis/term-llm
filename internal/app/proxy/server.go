@@ -550,6 +550,11 @@ func (s *Service) dispatch(w http.ResponseWriter, r *http.Request, ar activeRout
 	}
 	counter := &countingBody{ReadCloser: http.MaxBytesReader(w, body, s.opts.MaxBody), source: source, trailers: trailers}
 	r.Body = counter
+	requestObserver := observeRequestBody(counter, r, ar, path)
+	if requestObserver != nil {
+		r.Body = requestObserver
+	}
+	outgoingBody := r.Body
 	r.GetBody = nil
 	stats := &responseStats{ResponseWriter: w}
 	outcome := "complete"
@@ -584,6 +589,10 @@ func (s *Service) dispatch(w http.ResponseWriter, r *http.Request, ar activeRout
 		}
 		if custody != nil && !custody.dispatched {
 			outcome = "not_dispatched"
+		}
+		if requestObserver != nil {
+			metadata := requestObserver.Finalize()
+			rec.RequestMeta = &metadata
 		}
 		rec.Status = stats.status
 		rec.Sent = counter.n.Load()
@@ -626,7 +635,7 @@ func (s *Service) dispatch(w http.ResponseWriter, r *http.Request, ar activeRout
 			pr.Out.Host = ar.target.Host
 			// ReverseProxy clears zero-length bodies before Rewrite; restore the
 			// non-replayable sentinel so even empty safe-method requests cannot retry.
-			pr.Out.Body = counter
+			pr.Out.Body = outgoingBody
 			pr.Out.Trailer = trailers
 			pr.Out.GetBody = nil
 			stripRouteHeaders(pr.Out.Header, ar)

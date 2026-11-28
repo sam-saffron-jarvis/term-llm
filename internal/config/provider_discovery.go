@@ -62,12 +62,23 @@ func (c *Config) ProviderDeclared(name string) bool {
 	return ok && !pc.FromDefaults
 }
 
-// ProviderConfiguredVia reports why provider name is enabled (one of the
-// ConfiguredVia* constants), or "" when it is not enabled or is disabled.
+// ProviderProxyUnavailable reports whether the credential proxy has no route
+// for this provider or the provider cannot be safely delegated. The runtime
+// binding stays in place to prevent fallback to local credentials.
+func (c *Config) ProviderProxyUnavailable(name string) bool {
+	if c == nil {
+		return false
+	}
+	pc := c.Providers[name]
+	return pc.proxyRouteMissing || strings.HasPrefix(pc.ProxyBinding, "gated:")
+}
+
+// ProviderConfiguredVia reports why provider name is offered for discovery
+// (one of the ConfiguredVia* constants), or "" when it is not offered.
 // hasLocalCredentials detects local login state for built-ins and is only
 // consulted under provider_discovery: auto.
 func (c *Config) ProviderConfiguredVia(name string, hasLocalCredentials func(string) bool) string {
-	if c.ProviderDisabled(name) {
+	if c.ProviderDisabled(name) || c.ProviderProxyUnavailable(name) {
 		return ""
 	}
 	if c.ProviderDeclared(name) {

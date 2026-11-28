@@ -838,10 +838,11 @@ automatically repriced. Subscription fees and savings are not inferred; estimate
 exclude taxes, discounts, credits and fees.
 
 The request ledger shows model, client, normalized total input/output, cache-read
-share, duration and price. If no model was reported, the row shows the method and
-path. If token usage is unavailable, it shows bytes in and out when recorded.
+share, duration and price. If neither a served nor requested model is observed,
+the row shows the method and path. If token usage is unavailable, it shows bytes in and out when recorded.
 Byte sizes are abbreviated; hover for exact counts. Dates and times use the
-browser timezone. Expand a row for reported token counters and technical details.
+browser timezone. Expand a row for reported counters, requested settings and
+response facts.
 Missing values are not zero. Total input includes
 cached tokens exactly once across provider conventions. Repeated unmeasured HTTP
 errors collapse within each page; expand ×N to inspect individual requests.
@@ -859,6 +860,27 @@ up to 1,000 matching metadata records, never bodies, query strings, arbitrary
 headers or secret values. Admission commits before dispatch; incomplete outcomes
 remain unknown. Requests default to 30-day retention; financial history is separate.
 Path redaction cannot detect arbitrary secrets: avoid sensitive path identifiers.
+
+### Request insights
+
+On routes with `usage: auto`, **Requests** shows a positive thinking-token subline
+and requested effort when observed. Open a request to see **Requested** settings
+(model, thinking/budget, output cap, sampling and supported tool/cache controls),
+**Response** facts (served model/tier, finite finish reasons and usage), and the
+request metadata. These sections are immediately visible; raw payload capture
+retains its separate explicit access controls.
+
+Request settings are passively extracted only from recognized HTTP JSON inference
+bodies within a 1 MiB/depth-64 budget, without extra provider calls or tokenization.
+Unsupported/encoded/oversized/partial bodies and old history are not evidence of
+provider defaults. Zero and false remain explicit values. Settings never supply
+pricing inputs or replace the served model. Metadata history/export includes no
+new prompts, bodies, tool names/schemas, cache keys, or upstream identifiers.
+
+Thinking is included in OpenAI output counts, but additional to Gemini candidate
+output. Cache-write TTL subcounts are not added to their parent. Unknown counts
+are not zero, partial counts remain lower bounds, and **First byte** is not TTFT.
+WebSocket request-setting correlation and token-rate measurements are not supported.
 
 ## Configuration
 

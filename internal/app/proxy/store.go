@@ -17,6 +17,8 @@ import (
 	"time"
 
 	"github.com/term-llm/term-llm/internal/app/proxy/requesthistory"
+	"github.com/term-llm/term-llm/internal/app/proxy/requestmeta"
+	"github.com/term-llm/term-llm/internal/app/proxy/usagetap"
 	"github.com/term-llm/term-llm/internal/fileprivacy"
 	"github.com/term-llm/term-llm/internal/sqliteutil"
 	_ "modernc.org/sqlite"
@@ -225,32 +227,34 @@ func (s *store) createCaller(name string, grants []string, snap *snapshot) (Call
 }
 
 type Record struct {
-	Usage                 *ObservedUsage `json:"usage,omitempty"`
-	Money                 *Money         `json:"money,omitempty"`
-	Provider              string         `json:"provider,omitempty"`
-	App                   string         `json:"app,omitempty"`
-	ID                    string         `json:"id"`
-	Seq                   int64          `json:"seq"`
-	Started               int64          `json:"started"`
-	Ended                 int64          `json:"ended"`
-	CallerID              string         `json:"caller_id"`
-	CallerName            string         `json:"caller_name"`
-	Tag                   string         `json:"tag,omitempty"`
-	Route                 string         `json:"route"`
-	Revision              int64          `json:"revision"`
-	Method                string         `json:"method"`
-	Path                  string         `json:"path"`
-	LocalPrefix           string         `json:"local_prefix"`
-	Peer                  string         `json:"peer"`
-	Status                int            `json:"status"`
-	Outcome               string         `json:"outcome"`
-	Sent                  int64          `json:"sent"`
-	Received              int64          `json:"received"`
-	HeaderMS              int64          `json:"header_ms"`
-	FirstByteMS           int64          `json:"first_byte_ms"`
-	TotalMS               int64          `json:"total_ms"`
-	UpstreamID            string         `json:"upstream_id"`
-	WebSocketConnectionID string         `json:"websocket_connection_id,omitempty"`
+	ResponseMeta          *usagetap.ResponseMetadata `json:"response_meta,omitempty"`
+	RequestMeta           *requestmeta.Metadata      `json:"request_meta,omitempty"`
+	Usage                 *ObservedUsage             `json:"usage,omitempty"`
+	Money                 *Money                     `json:"money,omitempty"`
+	Provider              string                     `json:"provider,omitempty"`
+	App                   string                     `json:"app,omitempty"`
+	ID                    string                     `json:"id"`
+	Seq                   int64                      `json:"seq"`
+	Started               int64                      `json:"started"`
+	Ended                 int64                      `json:"ended"`
+	CallerID              string                     `json:"caller_id"`
+	CallerName            string                     `json:"caller_name"`
+	Tag                   string                     `json:"tag,omitempty"`
+	Route                 string                     `json:"route"`
+	Revision              int64                      `json:"revision"`
+	Method                string                     `json:"method"`
+	Path                  string                     `json:"path"`
+	LocalPrefix           string                     `json:"local_prefix"`
+	Peer                  string                     `json:"peer"`
+	Status                int                        `json:"status"`
+	Outcome               string                     `json:"outcome"`
+	Sent                  int64                      `json:"sent"`
+	Received              int64                      `json:"received"`
+	HeaderMS              int64                      `json:"header_ms"`
+	FirstByteMS           int64                      `json:"first_byte_ms"`
+	TotalMS               int64                      `json:"total_ms"`
+	UpstreamID            string                     `json:"upstream_id"`
+	WebSocketConnectionID string                     `json:"websocket_connection_id,omitempty"`
 }
 
 func (s *store) start(ctx context.Context, r *Record) error {

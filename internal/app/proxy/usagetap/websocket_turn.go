@@ -13,6 +13,7 @@ const MaxWebSocketTurns = maxResponseIDs
 // was observed. Usage contains only the first terminal snapshot's
 // evidence (or unknown counts if no terminal was observed), with Turns set to 1.
 type WebSocketTurn struct {
+	ResponseMeta   *ResponseMetadata
 	Started, Ended time.Time
 	Usage          Usage
 	Outcome        string
@@ -62,7 +63,7 @@ func (t *webSocketTurns) start(id string, created bool) {
 	}
 }
 
-func (t *webSocketTurns) end(id, outcome string, u Usage, bad bool) {
+func (t *webSocketTurns) end(id, outcome string, u Usage, bad bool, metadata *ResponseMetadata) {
 	started, eligible := t.lookup(id)
 	if !eligible {
 		return
@@ -82,7 +83,7 @@ func (t *webSocketTurns) end(id, outcome string, u Usage, bad bool) {
 		}
 	}
 	u.Turns = 1
-	t.observe(WebSocketTurn{Started: started, Ended: ended, Usage: u, Outcome: outcome})
+	t.observe(WebSocketTurn{Started: started, Ended: ended, Usage: u, Outcome: outcome, ResponseMeta: metadata})
 }
 
 // A skipped message could have ended any pending turn. Finalize each as

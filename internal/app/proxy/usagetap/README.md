@@ -78,3 +78,33 @@ usage on client close or shutdown when all observed response starts have matchin
 terminal counters and framing ends cleanly. Unfinished turns, missing usage, or
 truncated frames remain partial or unknown. Counts are not bills. Protocol, boundary,
 replay and cancellation tests define the detailed behavior.
+
+## Request insights and response diagnostics
+
+Request settings are observed separately by the adjacent `requestmeta` package;
+this parser still never reads request bodies. The HTTP proxy records optional
+`request_meta` and `response_meta` alongside the unchanged usage/money snapshots.
+JSON-backed history/export is additive; old rows remain unobserved, not defaults.
+
+`Parser.ResponseMetadata` returns finite terminal status/incomplete/finish enums,
+at most 16 indexed choice/candidate reasons (indices 0–127), and the evidenced
+Anthropic cache-write 5m/1h and native web-search/web-fetch request counters.
+Gemini's omitted proto3 index zero participates even in multi-candidate replies.
+Different reasons produce `mixed`, not first-choice success. Cumulative events
+replace their indexed reasons/counters; replay does not add them. Oversized lists,
+duplicates or malformed optional diagnostics conservatively qualify diagnostics,
+without poisoning otherwise valid usage. Unknown free-form reasons are never
+retained. TTL counters remain diagnostics, never additions to the parent write
+counter or inputs to frozen prices. Compatible cache-write extensions with
+unverified accounting semantics remain unobserved.
+
+Diagnostics distinguish completed transport from usage completeness: an observed
+provider `incomplete`/`failed` status is still an exact diagnostic assertion, not
+successful inference or a complete bill. Truncation/framing loss makes metadata
+partial. EventStream and Responses WebSocket wrappers preserve diagnostics; WS
+turns carry only the first terminal's own metadata, never the handshake's HTTP
+request settings or another turn's identifiers/settings. Responses connection
+records do not inherit a turn's finish diagnostics. HTTP terminal diagnostic
+uncertainty is monotonic, including usage-free terminals and both cancellation
+spellings; bounded in-memory response identities detect mixed responses without
+exposing IDs or changing established usage accounting.

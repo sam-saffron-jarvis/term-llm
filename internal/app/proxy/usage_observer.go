@@ -17,8 +17,9 @@ import (
 // Model/Tier are exact bounded response identities, or empty. Ambiguous usage
 // must not be priced: mixed/unsafe identities are not a default model or tier.
 type ObservedUsage struct {
-	Usage    usagetap.Usage    `json:"usage"`
-	Protocol usagetap.Protocol `json:"protocol"`
+	ResponseMeta *usagetap.ResponseMetadata `json:"-"`
+	Usage        usagetap.Usage             `json:"usage"`
+	Protocol     usagetap.Protocol          `json:"protocol"`
 }
 
 // ObserveResponseUsage is the Service.ResponseTap hook. The server must close
@@ -28,13 +29,10 @@ func ObserveResponseUsage(route Route, resp *http.Response, record *Record) {
 	if record == nil {
 		return
 	}
-	NewUsageObserver(route, resp, func(u ObservedUsage) { record.Usage = &u })
+	NewUsageObserver(route, resp, func(u ObservedUsage) { record.Usage = &u; record.ResponseMeta = u.ResponseMeta })
 }
 
-type usageTap interface {
-	Feed([]byte)
-	Finish(bool) usagetap.Usage
-}
+type usageTap = usagetap.Tap
 
 // NewUsageObserver replaces resp.Body with a bounded byte-preserving observer.
 // It publishes exactly once, on Close, and preserves io.ReadWriteCloser for 101
@@ -73,37 +71,7 @@ func NewUsageObserver(route Route, resp *http.Response, publish func(ObservedUsa
 }
 
 func selectUsageTap(route Route, resp *http.Response) (usageTap, usagetap.Protocol) {
-	path := ""
-	if resp.Request != nil && resp.Request.URL != nil {
-		path = resp.Request.URL.Path
-	}
-	// Cost adapters require a trusted origin as well as the endpoint schema.
-	if route.Usage != "off" && usagetap.IsExaSearchJSON(route.Upstream, resp) {
-		return &usagetap.ExaSearchJSON{}, usagetap.ExaSearch
-	}
-	if route.Usage != "off" && usagetap.IsTypeSafeSystemOneJSON(route.Upstream, resp) {
-		return usagetap.New(usagetap.TypeSafeSystemOne, usagetap.JSON), usagetap.TypeSafeSystemOne
-	}
-	ct := resp.Header.Get("Content-Type")
-	if route.Usage != "off" && len(resp.Header.Values("Content-Type")) <= 1 && usagetap.IsVeniceChatResponse(route.Upstream, resp) {
-		return usagetap.ForVeniceChatCompletions(ct), usagetap.ChatCompletions
-	}
-	if route.Usage != "off" && len(resp.Header.Values("Content-Type")) <= 1 && usagetap.IsMistralChatResponse(route.Upstream, resp) {
-		return usagetap.ForMistralChatCompletions(ct), usagetap.ChatCompletions
-	}
-	if strings.EqualFold(strings.TrimSpace(strings.SplitN(ct, ";", 2)[0]), "application/vnd.amazon.eventstream") {
-		return usagetap.NewEventStream(), usagetap.Bedrock
-	}
-	p := usagetap.ForResponse(path, ct)
-	if resp.StatusCode == http.StatusSwitchingProtocols {
-		// WS upgrades usually have no Content-Type. Select only the endpoint schema.
-		p = usagetap.ForResponse(path, "application/json")
-		return usagetap.NewWebSocket(p), p.Protocol()
-	}
-	if strings.Contains(path, "/model/") && strings.HasSuffix(path, "/invoke") && p.Protocol() == "" {
-		return usagetap.New(usagetap.Messages, usagetap.JSON), usagetap.Bedrock
-	}
-	return p, p.Protocol()
+	return usagetap.ForHTTPResponse(route.Upstream, route.Usage != "off", resp)
 }
 
 type usageObserverBody struct {
@@ -165,10 +133,14 @@ func (b *usageObserverBody) Close() error {
 		b.mu.Lock()
 		b.closed = true
 		u := b.finish()
+		metadata := usagetap.DiagnosticSnapshot(b.tap, !b.disabled)
 		b.tap = nil // release bounded parser buffers even after a recovered panic
 		b.mu.Unlock()
 		if b.publish != nil {
-			func() { defer func() { _ = recover() }(); b.publish(ObservedUsage{Usage: u, Protocol: b.protocol}) }()
+			func() {
+				defer func() { _ = recover() }()
+				b.publish(ObservedUsage{Usage: u, Protocol: b.protocol, ResponseMeta: metadata})
+			}()
 		}
 	})
 	return b.closeErr

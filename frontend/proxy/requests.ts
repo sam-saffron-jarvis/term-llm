@@ -9,7 +9,8 @@ import {
 import { byteValue } from './bytes';
 import { clipboardButton } from './clipboard';
 import { requestCapture } from './debug-preview';
-import { apiEquivalentLabel, apiEquivalentNote, moneyLabel } from './home';
+import { moneyLabel } from './home';
+import { effortValue, finishValue, thinkingValue } from './request-insights';
 import {
   actions,
   button,
@@ -81,114 +82,169 @@ export function requestDetail(
   context: Pick<UIContext, 'toast'>,
   capture?: HTMLElement,
 ): HTMLElement {
-  function group(title: string, values: [string, unknown][], extra?: HTMLElement) {
+  function fields(values: [string, unknown][]) {
     const list = el('dl');
     for (const [label, value] of values)
       list.append(
         el('dt', label),
         el('dd', value instanceof HTMLElement ? value : String(value ?? '—')),
       );
-    return el('div', el('h3', title), list, ...(extra ? [extra] : []));
+    return list;
   }
-  const money = request.money;
-  const plan = money?.billing === 'plan';
-  const price = plan ? money.api_equivalent : money;
-  const reason = price?.reason
-    ?.replace(
-      'Counterfactual API estimate only; not a bill, spending, or subscription savings.',
-      '',
-    )
-    .trim();
-  const priceRows: [string, unknown][] = [
-    ['Price source', price?.source],
-    ['Price date', price?.asof],
-    ['Note', reason],
-    ['Plan billing', plan ? moneyLabel(money) : undefined],
-  ];
+  function group(title: string, values: [string, unknown][]) {
+    return el('div', el('h3', title), fields(values));
+  }
+  const meta = request.request_meta;
   const usage = request.usage?.usage;
-  const protocol = request.usage?.protocol;
+  const response = request.response_meta;
+  const protocol = request.usage?.protocol || meta?.protocol;
   const connectionId = request.websocket_connection_id;
-  const upgraded = request.status === 101;
-  const usageRows: [string, unknown][] = [];
-  if (upgraded && !connectionId && knownCount(usage?.turns))
-    usageRows.push(['Observed turns', usage.turns.toLocaleString()]);
-  const convention =
-    protocol === 'messages' || protocol === 'bedrock'
-      ? 'Input excludes cache reads/writes.'
-      : ['responses', 'chat_completions', 'gemini'].includes(protocol || '')
-        ? 'Cache reads included in input (not additive).'
-        : 'Cache overlap unknown; do not sum.';
+  const missing = meta?.state === 'observed' ? 'Not sent' : 'Not observed';
+  const setting = (value: unknown) =>
+    value === undefined || value === ''
+      ? missing
+      : typeof value === 'boolean'
+        ? value
+          ? 'On'
+          : 'Off'
+        : typeof value === 'number'
+          ? Number.isFinite(value)
+            ? value.toLocaleString()
+            : 'Invalid'
+          : value;
+  const requested: [string, unknown][] = [
+    ['Model', setting(meta?.model)],
+    ['Effort', setting(meta?.reasoning_effort?.toLowerCase())],
+    ['Output limit', setting(meta?.output_limit_mode || meta?.output_limit)],
+    ['Tier', setting(meta?.service_tier)],
+  ];
+  const extra: [string, unknown][] = [
+    ['Thinking', meta?.thinking_mode],
+    ['Thinking budget', meta?.thinking_budget_mode || meta?.thinking_budget],
+    ['Reasoning mode', meta?.reasoning_mode],
+    ['Reasoning scope', meta?.reasoning_context],
+    ['Summary', meta?.reasoning_summary],
+    ['Temperature', meta?.temperature],
+    ['Top-p', meta?.top_p],
+    ['Stream', meta?.stream],
+    ['Verbosity', meta?.verbosity],
+    ['Tool choice', meta?.tool_choice],
+    ['Parallel tools', meta?.parallel_tools],
+    ['Declared tools', meta?.declared_tools],
+    ['Multi-agent', meta?.multi_agent],
+    ['Agent limit', meta?.agent_limit],
+    ['Cache policy', meta?.cache_mode],
+    ['Cache TTL', meta?.cache_ttl],
+  ];
+  requested.push(
+    ...extra
+      .filter(([, value]) => value !== undefined && value !== '')
+      .map(([label, value]) => [label, setting(value)] satisfies [string, unknown]),
+  );
+  const plan = request.money?.billing === 'plan';
+  const price = plan ? request.money?.api_equivalent : request.money;
+  const responseRows: [string, unknown][] = [
+    [
+      'Finish',
+      (response?.finish || response?.status || 'Not reported') +
+        (response?.state === 'partial' ? ' · partial' : ''),
+    ],
+    ['Model', usage?.ambiguous ? 'Ambiguous' : usage?.model || 'Not reported'],
+    ['Tier', usage?.ambiguous ? 'Ambiguous' : usage?.tier || 'Not reported'],
+    ['First byte', timing(request.first_byte_ms)],
+    ['Duration', timing(request.total_ms)],
+    ['Cache write', tokenCount(usage?.cache_write, isPartial(request))],
+    [plan ? 'API equivalent' : 'Price', titledValue(priceValue(request))],
+  ];
+  if (request.money?.billing === 'plan') responseRows.push(['Billing', moneyLabel(request.money)]);
+  if (response?.incomplete_reason)
+    responseRows.push(['Incomplete reason', response.incomplete_reason]);
+  if (response?.choices && response.choices.length > 1)
+    responseRows.push([
+      'Choices',
+      response.choices.map(({ index, reason }) => `${index}: ${reason}`).join(' · '),
+    ]);
+  for (const [label, value] of [
+    ['Cache write · 5m', response?.cache_write_5m],
+    ['Cache write · 1h', response?.cache_write_1h],
+    ['Web search', response?.web_search_requests],
+    ['Web fetch', response?.web_fetch_requests],
+  ] as const)
+    if (knownCount(value))
+      responseRows.push([label, tokenCount(value, response?.state === 'partial')]);
   const copy = clipboardButton('Copy request ID', context, {
     read: () => request.id,
     copied: 'Request ID copied.',
     unavailable: 'Select and copy the request ID manually.',
   });
-  const partial = isPartial(request);
   const tokenValues = [
-    ['Input / read', usage?.input],
-    ['Output / written', usage?.output],
-    ['Cache read', usage?.cached_input],
-    ['Cache write', usage?.cache_write],
+    [
+      'Input',
+      usage?.input,
+      protocol === 'messages' || protocol === 'bedrock'
+        ? 'Input excludes cache reads and writes'
+        : 'Cache reads included in input',
+    ],
+    [protocol === 'gemini' ? 'Output · candidates' : 'Output', usage?.output, 'Reported output'],
+    [
+      protocol === 'gemini'
+        ? 'Thinking · extra'
+        : ['responses', 'chat_completions'].includes(protocol || '')
+          ? 'Thinking · included'
+          : 'Thinking',
+      usage?.reasoning,
+      protocol === 'gemini'
+        ? 'Additional to candidate output'
+        : ['responses', 'chat_completions'].includes(protocol || '')
+          ? 'Already included in output'
+          : 'Reported thinking tokens (when separately available)',
+    ],
+    ['Cache read', usage?.cached_input, 'Cache-read tokens'],
   ] as const;
-  const tokens = el(
-    'div',
-    el('h3', 'Tokens'),
-    el(
-      'dl',
-      ...tokenValues.map(([label, value]) =>
-        el('div', el('dt', label), el('dd', tokenCount(value, partial))),
-      ),
-    ),
-  );
+  const tokenHeading = el('h3', 'Tokens');
+  tokenHeading.className = 'visually-hidden';
+  const tokenList = el('dl');
+  const tokens = el('div', tokenHeading, tokenList);
   tokens.className = 'request-tokens';
+  for (const [label, value, title] of tokenValues) {
+    const metric = el('div', el('dt', label), el('dd', tokenCount(value, isPartial(request))));
+    metric.title = title;
+    tokenList.append(metric);
+  }
+  const grid = el('div', group('Requested', requested), group('Response', responseRows));
+  grid.className = 'request-insights-grid';
   const [sent, received] = transferValues(request);
-  const hasTokens = tokenValues.some(([, value]) => knownCount(value));
-  const showTransfer = !hasTokens && (sent.text !== '—' || received.text !== '—');
-  const showPriceDetails = showTransfer
-    ? price?.source || price?.asof || reason
-    : priceRows.some(([, value]) => value);
-  const endpoint = `${request.method} ${localPath(request)}`;
-  const technical = el('div');
-  technical.className = 'request-technical';
-  const result = card(
-    'Request details',
-    el('h3', usage?.model || endpoint),
-    ...(usage?.model ? [el('code', endpoint)] : []),
-    ...(!showTransfer || priceValue(request).text !== '—'
-      ? [
-          el(
-            'p',
-            plan ? 'API-equivalent: ' : 'API cost: ',
-            el('strong', plan ? apiEquivalentLabel(money.api_equivalent) : moneyLabel(money)),
-            ...(plan ? [el('small', ` ${apiEquivalentNote}`)] : []),
-          ),
-        ]
-      : []),
-    ...(hasTokens
-      ? [tokens, el('small', connectionId ? `Tokens are for this turn. ${convention}` : convention)]
-      : []),
-    ...(showTransfer
-      ? [el('p', 'Bytes in: ', titledValue(sent), ' · Bytes out: ', titledValue(received))]
-      : []),
-    ...(showPriceDetails
-      ? [
-          disclosure(
-            'Price details',
-            group(
-              'Pricing',
-              priceRows.filter(([, value]) => value),
-            ),
-          ),
-        ]
-      : []),
-    disclosure(
-      'Technical details',
-      technical,
-      el('small', 'Partial counters may omit work; errors can still cost money.'),
-    ),
-  );
-  technical.append(
-    group('Summary', [
+  const priceReason = ['unpriced', 'unmeasured', 'estimated_floor'].includes(price?.kind || '')
+    ? price?.reason
+        ?.replace(
+          'Counterfactual API estimate only; not a bill, spending, or subscription savings.',
+          '',
+        )
+        .replace(/\s+/g, ' ')
+        .trim()
+    : undefined;
+  const metadata = el(
+    'div',
+    fields([
+      ['Request ID', el('span', request.id, ' ', copy)],
+      ...(connectionId
+        ? [['WebSocket connection ID', connectionId] satisfies [string, unknown]]
+        : []),
+      ['Protocol', protocol || 'Not reported'],
+      ['Endpoint', `${request.method} ${localPath(request)}`],
+      ['Request settings', meta?.state || 'not_observed'],
+      [
+        'Evidence',
+        (usage?.source || 'unknown') + (usage?.ambiguous ? ' · ambiguous model/tier' : ''),
+      ],
+      ...(response ? [['Diagnostics', response.state] satisfies [string, unknown]] : []),
+      ['Status', request.status === 101 ? webSocketUpgrade : request.status || '—'],
+      [
+        connectionId ? 'Turn outcome' : 'Outcome',
+        connectionId ? statusValue(request).word : outcomeLabel(request.outcome),
+      ],
+      ['Client', clientLabel(request)],
+      ['Route', request.route],
       ['Started', timestamp(request.started)?.toString() ?? '—'],
       [
         'Ended',
@@ -196,58 +252,42 @@ export function requestDetail(
           ? 'In progress'
           : (timestamp(request.ended)?.toString() ?? 'Not reported'),
       ],
-      ['Client', clientLabel(request)],
-      ['Route', request.route],
-      ['Method', request.method],
-      ['Local path', localPath(request)],
-      [
-        connectionId ? 'Transport status' : 'Status',
-        upgraded ? webSocketUpgrade : request.status || '—',
-      ],
-      [
-        connectionId ? 'Turn outcome' : upgraded ? 'Connection outcome' : 'Outcome',
-        connectionId || upgraded ? statusValue(request).word : outcomeLabel(request.outcome),
-      ],
-      ['Protocol', protocol || 'Not reported'],
-      [
-        'Evidence',
-        (usage?.source || 'unknown') + (usage?.ambiguous ? ' · ambiguous model/tier' : ''),
-      ],
-      ...usageRows,
+      ['Headers', timing(request.header_ms)],
+      ['Sent upstream', titledValue(sent)],
+      ['Received upstream', titledValue(received)],
+      ...(knownCount(usage?.total)
+        ? [
+            ['Total tokens', tokenCount(usage.total, isPartial(request))] satisfies [
+              string,
+              unknown,
+            ],
+          ]
+        : []),
+      ...(!connectionId && request.status === 101 && knownCount(usage?.turns)
+        ? [['Observed turns', usage.turns] satisfies [string, unknown]]
+        : []),
+      ['Price state', price?.kind || 'Not reported'],
+      ...(priceReason ? [['Price reason', priceReason] satisfies [string, unknown]] : []),
+      ...(connectionId && capture
+        ? [['Capture scope', 'WebSocket connection'] satisfies [string, unknown]]
+        : []),
+      ['Price source', price?.source || 'Not reported'],
+      ['Price date', price?.asof || 'Not reported'],
+      ['Upstream request ID', request.upstream_id || '—'],
+      ['Client ID', request.caller_id],
+      ['Peer', request.peer],
+      ['Sequence', request.seq],
+      ['Config revision', request.revision],
     ]),
-    el(
-      'div',
-      group('Timing', [
-        ['Headers', timing(request.header_ms)],
-        ['First byte', timing(request.first_byte_ms)],
-        ['Total', timing(request.total_ms)],
-      ]),
-      group('Size', [
-        ['Sent upstream', sent.text === '—' ? 'Not reported' : titledValue(sent)],
-        ['Received upstream', received.text === '—' ? 'Not reported' : titledValue(received)],
-      ]),
-      group(
-        'Identifiers',
-        [
-          ['Request ID', request.id],
-          ...(connectionId
-            ? [['WebSocket connection ID', connectionId] satisfies [string, string]]
-            : []),
-          ['Upstream request ID', request.upstream_id || '—'],
-          ['Client ID', request.caller_id],
-          ['Peer', request.peer],
-          ['Sequence', request.seq],
-          ['Config revision', request.revision],
-        ],
-        copy,
-      ),
-    ),
   );
-  if (capture) {
-    if (connectionId)
-      result.append(el('small', 'Raw payload capture covers the WebSocket connection.'));
-    result.append(capture);
-  }
+  metadata.className = 'request-meta';
+  const result = card(
+    'Request details',
+    ...(tokenValues.some(([, value]) => knownCount(value)) ? [tokens] : []),
+    grid,
+    metadata,
+  );
+  if (capture) result.append(capture);
   result.className = 'request-detail';
   return result;
 }
@@ -446,7 +486,9 @@ export function requestsView(state: ProxyState, api: ProxyClient, context: UICon
       const row = el('article');
       row.className = 'request-row';
       const endpoint = `${request.method} ${localPath(request)}`;
-      const model = request.usage?.usage?.model;
+      const servedModel = request.usage?.usage?.ambiguous ? undefined : request.usage?.usage?.model;
+      const model = servedModel || request.request_meta?.model;
+      const requestedModel = Boolean(model && !servedModel);
       const open = button('', () => {
         const closing = selected?.button === open;
         closeSelected();
@@ -467,8 +509,13 @@ export function requestsView(state: ProxyState, api: ProxyClient, context: UICon
       modelLabel.className = 'request-model-label';
       open.append(modelLabel);
       open.className = 'request-open';
-      open.setAttribute('aria-label', endpoint);
-      open.title = model ? `${model} · ${endpoint}` : endpoint;
+      open.setAttribute(
+        'aria-label',
+        requestedModel ? `${endpoint} · Requested model: ${model}` : endpoint,
+      );
+      open.title = model
+        ? `${requestedModel ? 'Requested model: ' : ''}${model} · ${endpoint}`
+        : endpoint;
       open.setAttribute('aria-expanded', 'false');
       details.id = `proxy-request-${request.seq}${nested ? '-group' : ''}`;
       if (model) {
@@ -485,6 +532,12 @@ export function requestsView(state: ProxyState, api: ProxyClient, context: UICon
       });
       const identity = el('div', open);
       identity.className = 'request-model';
+      const summary = [effortValue(request), finishValue(request)].filter(Boolean);
+      if (summary.length) {
+        const meta = el('div', summary.join(' · '));
+        meta.className = 'request-summary';
+        identity.append(meta);
+      }
       const status = statusValue(request);
       const chip = el('span');
       if (status.code) {
@@ -529,26 +582,67 @@ export function requestsView(state: ProxyState, api: ProxyClient, context: UICon
       client.title = `Client: ${callerName} · Route: ${request.route}`;
       client.setAttribute('aria-label', client.title);
       const duration = cell('duration', durationValue(request.total_ms));
+      if (group.length > 1) {
+        time.title += latest;
+        time.setAttribute('aria-label', time.title);
+        duration.title += latest;
+        duration.setAttribute('aria-label', duration.title);
+      }
+      const outputCell = cell('output', output);
+      const thinking = thinkingValue(request);
+      if (thinking && !fallback) {
+        const subline = titledValue(thinking);
+        subline.className = 'request-thinking';
+        outputCell.append(subline);
+      }
+      function clone(node: HTMLElement, className: string): HTMLElement {
+        const copy = node.cloneNode(true) as HTMLElement;
+        copy.className = className;
+        return copy;
+      }
+      const stamp = el(
+        'div',
+        clone(time, 'request-stamp-time'),
+        clone(chip, `request-stamp-status status-${status.tone}`),
+      );
+      stamp.className = 'request-stamp';
+      const compactClient = client.cloneNode(true) as HTMLElement;
+      compactClient.className = 'request-compact-client';
+      const compactUsage = cell('mobile-usage', {
+        text: input.text === '—' && output.text === '—' ? '—' : `${input.text}→${output.text}`,
+        title: `${input.title}; ${output.title}`,
+      });
+      const compactTokens = el('span', compactUsage);
+      compactTokens.className = 'request-compact-tokens';
+      if (thinking && !fallback) {
+        const subline = titledValue(thinking);
+        subline.className = 'request-compact-thinking';
+        compactTokens.append(subline);
+      }
+      const compactFacts = el(
+        'div',
+        compactClient,
+        clone(chip, `request-compact-status status-${status.tone}`),
+        clone(time, 'request-compact-time'),
+        clone(duration, 'request-compact-duration'),
+        compactTokens,
+      );
+      compactFacts.className = 'request-compact-facts';
       row.append(
         time,
         chip,
         identity,
         client,
         cell('input', input),
-        cell('output', output),
+        outputCell,
         cell('cache', cacheValue(request)),
         duration,
         cell('price', priceValue(request)),
-        cell('mobile-usage', {
-          text: input.text === '—' && output.text === '—' ? '—' : `${input.text}→${output.text}`,
-          title: `${input.title}; ${output.title}`,
-        }),
+        stamp,
+        compactFacts,
         details,
       );
       if (group.length > 1) {
-        time.title += latest;
-        duration.title += latest;
-        duration.setAttribute('aria-label', duration.title);
         const children = el('div');
         children.className = 'request-group-rows request-details';
         children.id = `proxy-request-group-${request.seq}`;

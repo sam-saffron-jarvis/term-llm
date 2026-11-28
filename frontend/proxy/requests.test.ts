@@ -505,8 +505,9 @@ describe('provider-reported request usage', () => {
     expect(root.querySelector('.request-mobile-usage')).toHaveTextContent(/^0 B→~12.23K$/);
     fireEvent.click(open);
     const detail = root.querySelector<HTMLElement>('.request-detail')!;
-    expect(getByRole(detail, 'heading', { name: 'GET /chatgpt/models' })).toBeTruthy();
-    expect(detail).toHaveTextContent('Bytes in: 0 B · Bytes out: ~12.23K');
+    expect(detailValues(detail).Endpoint).toBe('GET /chatgpt/models');
+    expect(detailValues(detail)['Sent upstream']).toBe('0 B');
+    expect(detailValues(detail)['Received upstream']).toBe('~12.23K');
     expect(detail.querySelector('.request-tokens')).toBeNull();
     expect(detail).not.toHaveTextContent(
       /Model not reported|API-equivalent: Not available|Cache overlap/,
@@ -517,8 +518,8 @@ describe('provider-reported request usage', () => {
       requestDetail({ ...record(1), outcome: 'active', sent: 0, received: 0 }),
     ).not.toHaveTextContent('0 B');
     const detail = requestDetail({ ...record(1), sent: -1, received: 18_200_000 });
-    expect(detail).toHaveTextContent('Bytes in: — · Bytes out: ~18.2M');
-    expect(detailValues(detail)['Sent upstream']).toBe('Not reported');
+    expect(detailValues(detail)['Received upstream']).toBe('~18.2M');
+    expect(detailValues(detail)['Sent upstream']).toBe('—');
   });
   it('preserves partial reported zeros, unknown sentinels, missing fields and exact model labels', () => {
     const request = record(1);
@@ -534,9 +535,9 @@ describe('provider-reported request usage', () => {
     };
     const detail = requestDetail(request);
     const values = detailValues(detail);
-    expect(getByRole(detail, 'heading', { name: 'gpt-5.2-codex-2026-11-01' })).toBeTruthy();
-    expect(values['Input / read']).toBe('≥0 · partial');
-    expect(values['Output / written']).toBe('Not reported');
+    expect(detailValues(detailGroup(detail, 'Response')).Model).toBe('gpt-5.2-codex-2026-11-01');
+    expect(values['Input']).toBe('≥0 · partial');
+    expect(values['Output']).toBe('Not reported');
     expect(values['Cache read']).toBe('≥0 · partial');
     expect(values['Cache write']).toBe('Not reported');
     expect(values.Evidence).toBe('partial');
@@ -546,11 +547,11 @@ describe('provider-reported request usage', () => {
     request.usage = { usage: { input: 1234, output: 0, source: 'unknown', ambiguous: true } };
     const detail = requestDetail(request);
     const values = detailValues(detail);
-    expect(values['Input / read']).toBe((1234).toLocaleString());
-    expect(values['Output / written']).toBe('0');
-    expect(getByRole(detail, 'heading', { name: 'POST /request-1' })).toBeTruthy();
+    expect(values['Input']).toBe((1234).toLocaleString());
+    expect(values['Output']).toBe('0');
+    expect(detailValues(detail).Endpoint).toBe('POST /request-1');
     expect(values.Evidence).toBe('unknown · ambiguous model/tier');
-    expect(detail.querySelector(':scope > small')).toHaveTextContent('Cache overlap unknown');
+    expect(detailValues(detailGroup(detail, 'Response')).Model).toBe('Ambiguous');
   });
   it.each(['responses', 'chat_completions', 'gemini', 'messages', 'bedrock'] as const)(
     'explains %s cache conventions without synthesizing totals',
@@ -570,19 +571,16 @@ describe('provider-reported request usage', () => {
       const detail = requestDetail(request);
       const group = detailGroup(detail, 'Tokens');
       const values = detailValues(group);
-      expect(values['Input / read']).toBe('100');
+      expect(values['Input']).toBe('100');
       expect(values['Cache read']).toBe('40');
-      expect(values['Cache write']).toBe('10');
+      expect(detailValues(detail)['Cache write']).toBe('10');
       expect(values['Reported total tokens']).toBeUndefined();
-      if (protocol === 'messages' || protocol === 'bedrock') {
-        expect(detail.querySelector(':scope > small')).toHaveTextContent(
-          'Input excludes cache reads/writes',
-        );
-      } else {
-        expect(detail.querySelector(':scope > small')).toHaveTextContent(
-          'Cache reads included in input (not additive)',
-        );
-      }
+      const title = detail.querySelector('.request-tokens dl > div')!.getAttribute('title');
+      expect(title).toContain(
+        protocol === 'messages' || protocol === 'bedrock'
+          ? 'Input excludes cache reads and writes'
+          : 'Cache reads included in input',
+      );
     },
   );
   it('preserves every reported zero token counter', () => {
@@ -593,7 +591,7 @@ describe('provider-reported request usage', () => {
     };
     const detail = requestDetail(request);
     const values = detailValues(detail);
-    for (const label of ['Input / read', 'Output / written', 'Cache read', 'Cache write'])
+    for (const label of ['Input', 'Output', 'Cache read', 'Cache write'])
       expect(values[label]).toBe('0');
   });
   it('shows the exact reported model when opening a request from the compact list', async () => {
@@ -611,94 +609,168 @@ describe('provider-reported request usage', () => {
     expect(root.querySelector('.request-model')).toHaveTextContent('exact-model-20261117');
     expect(root.querySelector('.request-detail')).toBeNull();
     fireEvent.click(getByRole(root, 'button', { name: 'POST /request-1' }));
-    expect(getByRole(root, 'heading', { name: 'exact-model-20261117' })).toBeTruthy();
+    expect(detailValues(detailGroup(root, 'Response')).Model).toBe('exact-model-20261117');
   });
   it('renders model text safely without deriving or displaying extra token totals', () => {
     const request = record(1);
     request.usage = { protocol: 'ollama', usage: { model: '<img src=x>', input: 1, total: 1 } };
     const detail = requestDetail(request);
     const group = detailGroup(detail, 'Tokens');
-    expect(getByRole(detail, 'heading', { name: '<img src=x>' })).toBeTruthy();
+    expect(detailValues(detailGroup(detail, 'Response')).Model).toBe('<img src=x>');
     expect(detailValues(group)['Reported total tokens']).toBeUndefined();
     expect(detail.querySelector('img')).toBeNull();
   });
 });
 
-describe('concise request details', () => {
-  it('keeps an actual unpriced request unknown, with its reason only in collapsed pricing', () => {
+describe('concise request insights', () => {
+  it.each([false, true])(
+    'identifies requested-model fallbacks when ambiguous=%s',
+    async (ambiguous) => {
+      const { root, requests } = setup(1);
+      requests.mockResolvedValueOnce({
+        requests: [
+          {
+            ...record(1),
+            request_meta: { state: 'observed', model: 'requested-only' },
+            ...(ambiguous
+              ? {
+                  usage: {
+                    protocol: 'responses',
+                    usage: { ambiguous: true, source: 'reported', model: 'stale-served' },
+                  },
+                }
+              : {}),
+          },
+        ],
+        next: 0,
+        total: 1,
+        page: 1,
+      });
+      await ready(root);
+      const open = root.querySelector('.request-open')!;
+      expect(open).toHaveTextContent('requested-only');
+      expect(open).not.toHaveTextContent('stale-served');
+      expect(open.getAttribute('title')).toContain('Requested model: requested-only');
+      expect(open.getAttribute('aria-label')).toContain('Requested model: requested-only');
+    },
+  );
+
+  it('reveals aligned Requested/Response and all metadata without nested disclosures', () => {
     const request = record(1);
-    request.usage = { protocol: 'responses', usage: { input: 12 } };
-    request.money = {
-      billing: 'pay_as_you_go',
-      kind: 'unpriced',
-      reason: 'No matching API rate.',
+    request.request_meta = {
+      state: 'observed',
+      model: 'requested-model',
+      reasoning_effort: 'high',
+      thinking_budget: 0,
+      output_limit: 0,
+      temperature: 0,
+      top_p: 0,
+      stream: false,
+      parallel_tools: false,
+      declared_tools: 0,
+      reasoning_mode: 'pro',
+      reasoning_context: 'current_turn',
+      reasoning_summary: 'auto',
+      multi_agent: false,
+      agent_limit: 3,
+      cache_mode: 'explicit',
+      cache_ttl: '30m',
+      verbosity: 'low',
+      tool_choice: 'auto',
+    };
+    request.usage = {
+      protocol: 'responses',
+      usage: {
+        model: 'served-model',
+        tier: 'flex',
+        input: 100,
+        output: 20,
+        reasoning: 0,
+        source: 'reported',
+      },
+    };
+    request.response_meta = {
+      state: 'observed',
+      status: 'incomplete',
+      incomplete_reason: 'max_output_tokens',
+      cache_write_5m: 0,
+      web_search_requests: 0,
     };
     const detail = requestDetail(request);
-    expect(detail.querySelector(':scope > p')).toHaveTextContent('API cost: No price yet');
-    expect(detail).not.toHaveTextContent('US$0');
-    const pricing = detailGroup(detail, 'Pricing');
-    expect(pricing.closest('details')?.open).toBe(false);
-    expect(detailValues(pricing)).toEqual({ Note: 'No matching API rate.' });
-    expect(detail).not.toHaveTextContent('API estimate');
+    expect(detail.querySelectorAll('details')).toHaveLength(0);
+    expect(detailValues(detailGroup(detail, 'Requested'))).toMatchObject({
+      Model: 'requested-model',
+      Effort: 'high',
+      'Output limit': '0',
+      'Thinking budget': '0',
+      Temperature: '0',
+      'Top-p': '0',
+      Stream: 'Off',
+      'Parallel tools': 'Off',
+      'Declared tools': '0',
+      'Multi-agent': 'Off',
+      'Agent limit': '3',
+      'Cache policy': 'explicit',
+      'Cache TTL': '30m',
+      'Reasoning scope': 'current_turn',
+      Summary: 'auto',
+      Verbosity: 'low',
+      'Tool choice': 'auto',
+    });
+    expect(detailValues(detailGroup(detail, 'Response'))).toMatchObject({
+      Model: 'served-model',
+      Tier: 'flex',
+      'Cache write · 5m': '0',
+      'Web search': '0',
+    });
+    expect(detail.querySelector('.request-meta')).toHaveTextContent('Request ID');
+    expect(detail).not.toHaveTextContent(/TTFT|Technical|More settings|NEW/);
+    expect(detail.querySelectorAll('.request-tokens dl > div')).toHaveLength(4);
   });
-  it('keeps copy ID usable inside the collapsed technical information', async () => {
+  it.each(['not_observed', 'unsupported', 'truncated', 'invalid'] as const)(
+    'never interprets %s as provider defaults',
+    (state) => {
+      const detail = requestDetail({ ...record(1), request_meta: { state } });
+      expect(detailValues(detailGroup(detail, 'Requested')).Effort).toBe('Not observed');
+    },
+  );
+  it('distinguishes legacy unobserved metadata, absent settings, and sentinels', () => {
+    expect(detailValues(detailGroup(requestDetail(record(1)), 'Requested')).Effort).toBe(
+      'Not observed',
+    );
+    const request = {
+      ...record(1),
+      request_meta: {
+        state: 'observed' as const,
+        thinking_budget_mode: 'dynamic' as const,
+        output_limit_mode: 'unlimited' as const,
+      },
+    };
+    const values = detailValues(detailGroup(requestDetail(request), 'Requested'));
+    expect(values.Effort).toBe('Not sent');
+    expect(values['Thinking budget']).toBe('dynamic');
+    expect(values['Output limit']).toBe('unlimited');
+  });
+  it('keeps copy ID immediately usable', async () => {
     const writeText = vi.fn().mockResolvedValue(undefined);
     vi.stubGlobal('navigator', { clipboard: { writeText } });
     try {
-      const toast = vi.fn();
-      const detail = renderRequestDetail(record(1), { toast });
+      const detail = requestDetail(record(1));
       document.body.append(detail);
-      const technical = detail.querySelector('details')!;
-      expect(technical.open).toBe(false);
-      technical.open = true;
-      const identifiers = detailGroup(technical, 'Identifiers');
-      expect(identifiers).toHaveTextContent('request-1');
-      fireEvent.click(getByRole(identifiers, 'button', { name: 'Copy request ID' }));
+      fireEvent.click(getByRole(detail, 'button', { name: 'Copy request ID' }));
       await waitFor(() => expect(writeText).toHaveBeenCalledWith('request-1'));
-      expect(toast).toHaveBeenCalledWith('Request ID copied.', 'success');
-      expect(getByRole(technical, 'button', { name: 'Copy request ID' })).toBeVisible();
     } finally {
       vi.unstubAllGlobals();
     }
   });
-  it('puts model, price and exactly four counters ahead of collapsed advanced information', () => {
-    const request = record(1);
-    request.usage = {
-      protocol: 'responses',
-      usage: { model: 'exact-model', input: 100, output: 20, cached_input: 40, cache_write: 0 },
-    };
-    request.money = {
-      billing: 'pay_as_you_go',
-      kind: 'estimated',
-      amount_micros: 1200000,
-      currency: 'USD',
-      source: 'models.dev',
-      asof: '2026-11-17',
-    };
-    const detail = requestDetail(request);
-    expect(getByRole(detail, 'heading', { name: 'exact-model' })).toBeTruthy();
-    expect(detail.querySelector(':scope > code')).toHaveTextContent('POST /request-1');
-    const counters = detail.querySelectorAll('.request-tokens dl > div');
-    expect(counters).toHaveLength(4);
-    expect(counters[0]).toHaveTextContent('Input / read100');
-    const pricing = [...detail.querySelectorAll('details')].find((d) =>
-      d.querySelector('summary')?.textContent?.includes('Price'),
-    )!;
-    expect(pricing.open).toBe(false);
-    expect(pricing).toHaveTextContent('models.dev');
-    expect(pricing).toHaveTextContent('2026-11-17');
-    const technical = [...detail.querySelectorAll('details')].find((d) =>
-      d.querySelector('summary')?.textContent?.includes('Technical'),
-    )!;
-    expect(technical.open).toBe(false);
-    expect(technical).toHaveTextContent('First byte');
-    expect(technical).toHaveTextContent('request-1');
-    for (const disclosure of detail.querySelectorAll('details')) disclosure.remove();
-    expect(detail).toHaveTextContent('About US$1.20');
-    expect(detail).not.toHaveTextContent(
-      /Price source|Price date|First byte|Request ID|Not applicable/,
-    );
-    expect(detail.textContent!.length).toBeLessThan(300);
+  it('qualifies incomplete diagnostics without changing valid response usage', () => {
+    const detail = requestDetail({
+      ...record(1),
+      response_meta: { state: 'partial', finish: 'length' },
+      usage: { protocol: 'responses', usage: { input: 10, output: 20, source: 'reported' } },
+    });
+    expect(detailValues(detailGroup(detail, 'Response')).Finish).toBe('length · partial');
+    expect(detailValues(detail).Output).toBe('20');
   });
 });
 
@@ -706,101 +778,64 @@ describe('plan API-equivalent request estimate', () => {
   it.each(['estimated', 'estimated_floor'] as const)(
     'separates %s API rates from actual plan cost',
     (kind) => {
-      const request = record(1);
-      request.money = {
-        billing: 'plan',
-        kind: 'included',
-        api_equivalent: {
-          kind,
-          amount_micros: 1200000,
-          currency: 'USD',
-          source: 'Published API card',
-          asof: '2026-11-17',
-          rate: {
-            provider: 'openai',
-            model: 'exact-price-model',
-            tier: 'default',
+      const request = {
+        ...record(1),
+        money: {
+          billing: 'plan' as const,
+          kind: 'included' as const,
+          api_equivalent: {
+            kind,
+            amount_micros: 1200000,
             currency: 'USD',
             source: 'Published API card',
             asof: '2026-11-17',
-            input_micros_per_million: 1000000,
-            output_micros_per_million: 2000000,
-            cache_read_micros_per_million: 0,
           },
         },
       };
       const detail = requestDetail(request);
-      const pricing = detailGroup(detail, 'Pricing');
-      expect(detailValues(pricing)['Plan billing']).toContain('extra charges not reported');
-      expect(getByRole(detail, 'heading', { name: 'POST /request-1' })).toBeTruthy();
-      expect(detail.querySelector(':scope > p')).toHaveTextContent(
-        `API-equivalent: ${kind === 'estimated' ? 'About' : 'At least'} US$1.20`,
+      const response = detailValues(detailGroup(detail, 'Response'));
+      expect(response['API equivalent']).toContain(
+        kind === 'estimated' ? '≈$1.20 API' : '≥$1.20 API',
       );
-      expect(pricing.closest('details')?.open).toBe(false);
-      expect(pricing).toHaveTextContent('Published API card');
-      expect(pricing).toHaveTextContent('2026-11-17');
-      expect(detail.textContent?.match(/API estimate, not spend or savings/g)).toHaveLength(1);
-      expect(detail).not.toHaveTextContent('exact-price-model');
+      expect(response.Billing).toContain('extra charges not reported');
+      expect(detailValues(detail)['Price source']).toBe('Published API card');
+      expect(detailValues(detail)['Price date']).toBe('2026-11-17');
+      expect(detail.querySelector('details')).toBeNull();
     },
   );
-  it.each([
-    undefined,
-    { kind: 'unpriced' as const, reason: 'Exact model is unknown.' },
-    { kind: 'unmeasured' as const },
-  ])('does not turn unknown or missing equivalence into a free plan', (api_equivalent) => {
-    const request = record(1);
-    request.usage = { protocol: 'responses', usage: { input: 12 } };
-    request.money = { billing: 'plan', kind: 'unmeasured', api_equivalent };
-    const detail = requestDetail(request);
-    const equivalent = detailGroup(detail, 'Pricing');
-    expect(detail.querySelector(':scope > p')).toHaveTextContent('API-equivalent: Not available');
-    expect(equivalent.textContent).not.toContain('US$0');
-    expect(detailValues(equivalent)['Price source']).toBeUndefined();
-    expect(detailValues(equivalent)['Price date']).toBeUndefined();
-    if (api_equivalent?.reason) expect(equivalent).toHaveTextContent(api_equivalent.reason);
-  });
-  it.each(['', ' Exact response model and service tier are not known.'])(
-    'removes repeated boilerplate but retains a useful unavailable reason: %s',
-    (extra) => {
-      const request = record(1);
-      request.usage = { protocol: 'responses', usage: { input: 12 } };
-      request.money = {
-        billing: 'plan',
-        kind: 'unmeasured',
-        api_equivalent: {
-          kind: 'unpriced',
-          reason:
-            'Counterfactual API estimate only; not a bill, spending, or subscription savings.' +
-            extra,
-        },
-      };
-      const detail = requestDetail(request);
-      const pricing = detailGroup(detail, 'Pricing');
-      expect(pricing.closest('details')?.open).toBe(false);
-      expect(detail).not.toHaveTextContent('Counterfactual');
-      expect(detail).not.toHaveTextContent(/Scope|Not applicable|Price source|Price date/);
-      expect(detail.textContent?.match(/API estimate, not spend or savings/g)).toHaveLength(1);
-      if (extra) expect(detailValues(pricing).Note).toBe(extra.trim());
-      else expect(detailValues(pricing).Note).toBeUndefined();
-      pricing.closest('details')!.remove();
-      expect(detail).not.toHaveTextContent('Exact response model');
+  it.each([undefined, { kind: 'unpriced' as const }, { kind: 'unmeasured' as const }])(
+    'keeps unknown equivalence distinct from zero',
+    (api_equivalent) => {
+      const detail = requestDetail({
+        ...record(1),
+        money: { billing: 'plan', kind: 'unmeasured', api_equivalent },
+      });
+      expect(detailValues(detailGroup(detail, 'Response'))['API equivalent']).toBe('—');
+      expect(detail).not.toHaveTextContent('$0');
     },
   );
   it('retains true zero estimates and never shows counterfactual amounts for non-plan billing', () => {
-    const request = record(1);
-    request.money = {
-      billing: 'plan',
-      kind: 'included',
-      api_equivalent: { kind: 'estimated', amount_micros: 0, currency: 'USD' },
+    const request: ProxyRequest = {
+      ...record(1),
+      money: {
+        billing: 'plan',
+        kind: 'included',
+        api_equivalent: { kind: 'estimated', amount_micros: 0, currency: 'USD' },
+      },
     };
-    expect(requestDetail(request).querySelector(':scope > p')).toHaveTextContent('About US$0.00');
-    request.money.billing = 'pay_as_you_go';
-    request.money.kind = 'estimated';
-    request.money.amount_micros = 3000000;
-    request.money.currency = 'USD';
+    expect(detailValues(detailGroup(requestDetail(request), 'Response'))['API equivalent']).toBe(
+      '≈$0.00 API',
+    );
+    request.money = {
+      ...request.money!,
+      billing: 'pay_as_you_go',
+      kind: 'estimated',
+      amount_micros: 3000000,
+      currency: 'USD',
+    };
     const detail = requestDetail(request);
-    expect(detail.querySelector(':scope > p')).toHaveTextContent('API cost: About US$3.00');
-    expect(detail).not.toHaveTextContent('API-equivalent');
+    expect(detailValues(detailGroup(detail, 'Response')).Price).toBe('≈$3.00');
+    expect(detail).not.toHaveTextContent('API equivalent');
   });
 });
 
@@ -837,10 +872,10 @@ describe('WebSocket request metadata', () => {
       fireEvent.click(getByRole(root, 'button', { name: 'GET /request-1' }));
       const values = detailValues(root.querySelector('.request-detail') as HTMLElement);
       expect(values.Status).toBe('HTTP 101 · WebSocket upgrade succeeded');
-      expect(values['Connection outcome']).toBe('Closed by client');
+      expect(values.Outcome).toContain('Closed by client');
       expect(values.Protocol).toBe('responses');
       expect(values.Evidence).toBe(source);
-      expect(values['Output / written']).toBe(detailOutput);
+      expect(values['Output']).toBe(detailOutput);
       expect(values['Observed turns']).toBe(observedTurns);
     },
   );
@@ -904,11 +939,11 @@ describe('Responses WebSocket turns', () => {
     const detail = root.querySelector<HTMLElement>('.request-detail')!;
     const values = detailValues(detail);
     expect(values['Turn outcome']).toBe(label);
-    expect(values['Transport status']).toBe('HTTP 101 · WebSocket upgrade succeeded');
+    expect(values.Status).toBe('HTTP 101 · WebSocket upgrade succeeded');
     expect(values['Connection outcome']).toBeUndefined();
     expect(values['Observed turns']).toBeUndefined();
-    expect(detail).toHaveTextContent('Tokens are for this turn.');
-    for (const field of ['Sent upstream', 'Received upstream', 'Headers', 'First byte', 'Total'])
+    expect(values['WebSocket connection ID']).toBe('px_connection');
+    for (const field of ['Headers', 'First byte', 'Duration'])
       expect(values[field]).toBe('Not reported');
   });
 
@@ -928,16 +963,15 @@ describe('Responses WebSocket turns', () => {
       expect(getByRole(detail, 'button', { name: 'View raw payload' })).toBeEnabled(),
     );
     expect(lookup).toHaveBeenCalledExactlyOnceWith('px_connection');
-    expect(detail).toHaveTextContent('Raw payload capture covers the WebSocket connection.');
-    const identifiers = detailGroup(detail, 'Identifiers');
+    expect(detail).toHaveTextContent('WebSocket connection ID');
+    const identifiers = detail.querySelector<HTMLElement>('.request-meta')!;
     expect(detailValues(identifiers)).toMatchObject({
-      'Request ID': row.id,
+      'Request ID': row.id + ' Copy request ID',
       'WebSocket connection ID': 'px_connection',
     });
     const writeText = vi.fn().mockResolvedValue(undefined);
     vi.stubGlobal('navigator', { clipboard: { writeText } });
     try {
-      identifiers.closest('details')!.open = true;
       fireEvent.click(getByRole(identifiers, 'button', { name: 'Copy request ID' }));
       await waitFor(() => expect(writeText).toHaveBeenCalledExactlyOnceWith(row.id));
     } finally {
@@ -1005,7 +1039,8 @@ describe('compact request ledger', () => {
       'request-cache',
       'request-duration',
       'request-price',
-      'request-mobile-usage',
+      'request-stamp',
+      'request-compact-facts',
       'request-details',
     ]);
     expect(row.querySelector('.request-time')?.textContent).toMatch(/^\d{2}:\d{2}:\d{2}$/);
@@ -1059,9 +1094,9 @@ describe('compact request ledger', () => {
       );
       expect(root.querySelector('.request-mobile-usage')).toHaveTextContent(/^3 B→4 B$/);
       fireEvent.click(getByRole(root, 'button', { name: 'POST /request-1' }));
-      expect(
-        detailValues(root.querySelector('.request-detail') as HTMLElement)['Output / written'],
-      ).toBe('20');
+      expect(detailValues(root.querySelector('.request-detail') as HTMLElement)['Output']).toBe(
+        '20',
+      );
     },
   );
   it('retains partial lower-bound output qualifiers in compact and mobile usage', async () => {
@@ -1158,5 +1193,82 @@ describe('compact request ledger', () => {
     expect(root.querySelectorAll('.request-date-group')).toHaveLength(2);
     expect(root.querySelectorAll('.request-row')).toHaveLength(4);
     expect(root.querySelector('.request-repeat')).toBeNull();
+  });
+});
+
+describe('reviewed request metadata regressions', () => {
+  it.each(['messages', 'bedrock', 'ollama', undefined] as const)(
+    'keeps %s thinking detail semantics neutral',
+    (protocol) => {
+      const detail = requestDetail({
+        ...record(1),
+        usage: { protocol, usage: { input: 1, reasoning: -1 } },
+      });
+      const thinking = [...detail.querySelectorAll<HTMLElement>('.request-tokens dl > div')].find(
+        (tile) => tile.querySelector('dt')?.textContent === 'Thinking',
+      )!;
+      expect(thinking.title).toBe('Reported thinking tokens (when separately available)');
+      expect(thinking.title).not.toContain('included');
+    },
+  );
+  it.each(['unpriced', 'unmeasured', 'estimated_floor'] as const)(
+    'restores concise %s price reasons without boilerplate',
+    (kind) => {
+      const detail = requestDetail({
+        ...record(1),
+        money: {
+          billing: 'plan',
+          kind: 'included',
+          api_equivalent: {
+            kind,
+            reason:
+              'Counterfactual API estimate only; not a bill, spending, or subscription savings. Exact rate unavailable.',
+          },
+        },
+      });
+      expect(detailValues(detail)['Price reason']).toBe('Exact rate unavailable.');
+      expect(detail).not.toHaveTextContent('Counterfactual');
+      expect(detail.querySelector('details')).toBeNull();
+    },
+  );
+  it('labels a WS turn capture as connection-scoped without tutorial prose', () => {
+    const capture = document.createElement('div');
+    capture.textContent = 'Capture access';
+    const detail = renderRequestDetail(
+      { ...record(1), websocket_connection_id: 'connection' },
+      { toast: vi.fn() },
+      capture,
+    );
+    expect(detailValues(detail)['Capture scope']).toBe('WebSocket connection');
+    expect(detail).toHaveTextContent('Capture access');
+  });
+  it('copies latest-not-aggregate titles and aria into responsive error facts', async () => {
+    const { root, requests } = setup(2);
+    const error = {
+      ...record(2),
+      status: 400,
+      outcome: 'http_error',
+      path: '/same',
+      request_meta: { state: 'observed' as const, model: 'model-a' },
+    };
+    requests.mockResolvedValueOnce({
+      requests: [error, { ...error, id: 'older', seq: 1, started: Number(error.started) - 1000 }],
+      next: 0,
+      total: 2,
+      page: 1,
+    });
+    await ready(root);
+    await waitFor(() => expect(root.querySelectorAll('.request-row')).toHaveLength(1));
+    for (const selector of [
+      '.request-time',
+      '.request-duration',
+      '.request-stamp-time',
+      '.request-compact-time',
+      '.request-compact-duration',
+    ]) {
+      const cell = root.querySelector(selector)!;
+      expect(cell.getAttribute('title')).toContain('Latest request, not aggregate');
+      expect(cell.getAttribute('aria-label')).toBe(cell.getAttribute('title'));
+    }
   });
 });

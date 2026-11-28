@@ -41,6 +41,7 @@ One line per root-module package, generated from package doc comments by `make d
 - `internal/app/proxy/nativeusage/poll` — maintains a bounded, in-memory cache of native subscription usage.
 - `internal/app/proxy/pricing` — calculates frozen money snapshots from usage and rate cards.
 - `internal/app/proxy/requesthistory` — builds indexed query predicates for proxy request history.
+- `internal/app/proxy/requestmeta` — passively observes bounded, allowlisted HTTP inference settings.
 - `internal/app/proxy/usagetap` — observes bounded provider response events without I/O or retaining response bodies.
 - `internal/app/proxyconnect` — provides local-only undo of legacy Claude Code settings enrollment, preserving unrelated edits and native credentials.
 - `internal/app/proxyrun` — launches a native client with a process-local credential-proxy binding.

@@ -85,6 +85,46 @@ func TestProviderConfiguredViaByDiscoveryMode(t *testing.T) {
 	}
 }
 
+func TestProviderDiscoveryKeepsUnavailableProxyBindingsOutOfPickers(t *testing.T) {
+	clearProviderDiscoveryEnv(t)
+	t.Setenv("ANTHROPIC_API_KEY", "local-test-key")
+	cfg, root := loadFamilyProxy(t, proxyDiscoveryPayload{
+		Providers: []proxyDiscoveredProvider{familyProvider("anthropic-work", "inference",
+			familyRoute("anthropic-work", "anthropic", "/anthropic-work/"))},
+	}, "  direct: [ollama]\n", `default_provider: bedrock
+providers:
+  anthropic: {}
+  ollama: {}
+`)
+
+	for _, mode := range []string{ProviderDiscoveryAuto, ProviderDiscoveryEnv, ProviderDiscoveryConfig} {
+		cfg.ProviderDiscovery = mode
+		for name, want := range map[string]string{
+			"bedrock": "", "anthropic": "", "cursor-bin": "",
+			"anthropic-work": ConfiguredViaConfig, "ollama": ConfiguredViaConfig,
+		} {
+			if got := cfg.ProviderConfiguredVia(name, func(string) bool {
+				t.Errorf("%s/%s: unexpectedly probed local credentials", mode, name)
+				return true
+			}); got != want {
+				t.Errorf("%s/%s: configured via %q, want %q", mode, name, got, want)
+			}
+		}
+	}
+
+	// Discovery must not remove the binding or let a pinned request fall back
+	// to local AWS/Anthropic credentials.
+	for _, name := range []string{"bedrock", "anthropic"} {
+		pc := cfg.Providers[name]
+		if err := pc.ResolveForInference(); err != nil {
+			t.Errorf("%s: existing proxy binding should still resolve: %v", name, err)
+		}
+		if want := unavailableProxyEndpoint(root, name); pc.BaseURL != want || pc.ProxyBinding != want {
+			t.Errorf("%s: proxy binding = %q, base URL = %q, want %q", name, pc.ProxyBinding, pc.BaseURL, want)
+		}
+	}
+}
+
 func TestProviderNotEnabledError(t *testing.T) {
 	clearProviderDiscoveryEnv(t)
 	t.Setenv("XAI_API_KEY", "xai-test")
