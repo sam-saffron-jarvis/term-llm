@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/term-llm/term-llm/internal/llm/core"
+	"github.com/term-llm/term-llm/internal/proxyclient"
 )
 
 func TestAnthropicStreamingOutputCeiling(t *testing.T) {
@@ -30,6 +31,7 @@ func TestAnthropicStreamingOutputCeiling(t *testing.T) {
 		model    string
 		search   bool
 		gateway  bool
+		proxy    bool
 		request  int
 		catalog  int // 0 = warm cache, -1 = unavailable
 		expected int64
@@ -41,6 +43,8 @@ func TestAnthropicStreamingOutputCeiling(t *testing.T) {
 		{name: "explicit lower cap", model: "claude-opus-5-5-high", request: 32_000, expected: 32_000},
 		{name: "explicit cap above ceiling", model: "claude-opus-5-5-high", request: 200_000, expected: 128_000},
 		{name: "unknown model", model: "claude-unknown-high", expected: 4096},
+		{name: "delegated proxy catalog", model: "claude-opus-5-5-high", proxy: true, catalog: 96_000, expected: 96_000},
+		{name: "delegated proxy fallback", model: "claude-opus-5-5-high", proxy: true, catalog: -1, expected: 64_000},
 		{name: "custom gateway", model: "claude-opus-5-5-high", gateway: true, expected: 4096},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -56,7 +60,15 @@ func TestAnthropicStreamingOutputCeiling(t *testing.T) {
 			}
 			var catalogCalls int
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				if r.URL.Path == "/v1/models" {
+				if tc.proxy {
+					if r.Header.Get("X-Api-Key") != "test-key" {
+						t.Error("missing route credential")
+					}
+					if r.URL.Path != "/anthropic-work/v1/models" && r.URL.Path != "/anthropic-work/v1/messages" {
+						t.Errorf("unexpected route path %s", r.URL.Path)
+					}
+				}
+				if r.URL.Path == "/v1/models" || r.URL.Path == "/anthropic-work/v1/models" {
 					catalogCalls++
 					if tc.catalog <= 0 {
 						http.Error(w, "catalog unavailable", http.StatusServiceUnavailable)
@@ -77,6 +89,12 @@ func TestAnthropicStreamingOutputCeiling(t *testing.T) {
 			baseURL := anthropicDefaultBaseURL
 			if tc.gateway {
 				baseURL = srv.URL
+			}
+			if tc.proxy {
+				baseURL = srv.URL + "/anthropic-work"
+				if err := proxyclient.Register([]proxyclient.Binding{{Root: baseURL, Token: "test-key"}}); err != nil {
+					t.Fatal(err)
+				}
 			}
 			p, err := NewAnthropicProviderWithBaseURL("test-key", tc.model, AnthropicCredAPIKey, baseURL)
 			if err != nil {

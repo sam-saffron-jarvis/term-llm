@@ -2,7 +2,9 @@ package anthropic
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
+	"fmt"
 	"os"
 	"regexp"
 	"slices"
@@ -12,6 +14,7 @@ import (
 	"github.com/term-llm/term-llm/internal/cache"
 	"github.com/term-llm/term-llm/internal/config"
 	"github.com/term-llm/term-llm/internal/llm/core"
+	"github.com/term-llm/term-llm/internal/proxyclient"
 )
 
 // anthropicModelCacheKey stores the live public-API catalog. Custom base URLs
@@ -36,8 +39,8 @@ func (p *AnthropicProvider) ListModels(ctx context.Context) ([]core.ModelInfo, e
 	for _, record := range records {
 		models = append(models, anthropicModelInfo(record))
 	}
-	if p.client.usesPublicAPI() {
-		RefreshAnthropicCacheSync(models)
+	if key := p.client.catalogCacheKey(); key != "" && len(models) > 0 {
+		_ = cache.WriteModelInfoCache(key, modelInfosToCache(models))
 	}
 	return models, nil
 }
@@ -90,14 +93,6 @@ func anthropicSupportedThinkingTypes(record anthropicModelRecord) []string {
 	return types
 }
 
-// RefreshAnthropicCacheSync stores freshly fetched public-API model metadata.
-func RefreshAnthropicCacheSync(models []core.ModelInfo) {
-	if len(models) == 0 {
-		return
-	}
-	_ = cache.WriteModelInfoCache(anthropicModelCacheKey, modelInfosToCache(models))
-}
-
 // RefreshAnthropicModelsIfStale refreshes the public-API catalog cache when it
 // is missing or stale. Custom base URLs are skipped. A failed refresh leaves
 // stale entries (or the curated fallback) available.
@@ -126,7 +121,11 @@ func AnthropicUsesPublicCatalog(providerCfg config.ProviderConfig) bool {
 // AnthropicModelCacheFresh reports whether the public-API catalog cache exists
 // and is within its TTL.
 func AnthropicModelCacheFresh() bool {
-	cached, err := cache.ReadModelCache(anthropicModelCacheKey)
+	return anthropicCatalogFresh(anthropicModelCacheKey)
+}
+
+func anthropicCatalogFresh(key string) bool {
+	cached, err := cache.ReadModelCache(key)
 	return err == nil && cache.IsCacheValid(cached) && len(cached.ModelInfos) > 0
 }
 
@@ -141,10 +140,14 @@ const anthropicRefreshRetryInterval = 2 * time.Minute
 // start now and, if so, records the attempt. It returns false while a recent
 // attempt (successful or not) is within the retry interval.
 func ClaimAnthropicCatalogRefresh() bool {
-	if cached, err := cache.ReadModelCache(anthropicRefreshAttemptKey); err == nil && time.Since(cached.FetchedAt) < anthropicRefreshRetryInterval {
+	return claimAnthropicCatalogRefresh(anthropicRefreshAttemptKey)
+}
+
+func claimAnthropicCatalogRefresh(key string) bool {
+	if cached, err := cache.ReadModelCache(key); err == nil && time.Since(cached.FetchedAt) < anthropicRefreshRetryInterval {
 		return false
 	}
-	_ = cache.WriteModelCache(anthropicRefreshAttemptKey, nil)
+	_ = cache.WriteModelCache(key, nil)
 	return true
 }
 
@@ -210,19 +213,41 @@ func anthropicCachedModelInfoForRequest(model string) (core.ModelInfo, bool) {
 	return core.ModelInfo{}, false
 }
 
-// defaultOutputTokenLimit refreshes stale or missing public metadata once per
-// retry interval, without making inference depend on catalog availability.
-func (p *AnthropicProvider) defaultOutputTokenLimit(ctx context.Context, model string) int {
-	if !AnthropicModelCacheFresh() && ClaimAnthropicCatalogRefresh() {
+// catalogCacheKey keeps delegated route metadata separate from the public
+// catalog and from other routes. Arbitrary custom gateways remain opt-out.
+func (c *anthropicClient) catalogCacheKey() string {
+	if c.usesPublicAPI() {
+		return anthropicModelCacheKey
+	}
+	if c.bedrock == nil && c.baseURL != nil {
+		endpoint := c.baseURL.String()
+		if binding, ok := proxyclient.Lookup(endpoint); ok && binding.Kind == "" && proxyclient.SameRoot(endpoint, binding.Root) {
+			return fmt.Sprintf("anthropic-route-%x", sha256.Sum256([]byte(binding.Root)))
+		}
+	}
+	return ""
+}
+
+// defaultOutputTokenLimit refreshes stale or missing metadata without making
+// inference depend on catalog availability.
+func (p *AnthropicProvider) defaultOutputTokenLimit(ctx context.Context, key, model string) int {
+	attemptKey := key + "-refresh-attempt"
+	if !anthropicCatalogFresh(key) && claimAnthropicCatalogRefresh(attemptKey) {
 		catalogCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
 		defer cancel()
 		if models, err := p.ListModels(catalogCtx); err == nil {
 			if info, ok := findAnthropicModelInfo(models, model); ok && info.OutputLimit > 0 {
 				return info.OutputLimit
 			}
+			return outputLimitForModel(model)
 		}
 	}
-	return anthropicOutputLimitForRequest(model)
+	if cached, err := cache.ReadModelCache(key); err == nil {
+		if info, ok := findAnthropicModelInfo(modelInfosFromCache(cached), model); ok && info.OutputLimit > 0 {
+			return info.OutputLimit
+		}
+	}
+	return outputLimitForModel(model)
 }
 
 // anthropicOutputLimitForRequest prefers the public API catalog's max_tokens

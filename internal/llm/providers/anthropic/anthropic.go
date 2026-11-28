@@ -232,10 +232,10 @@ func (p *AnthropicProvider) Capabilities() core.Capabilities {
 func (p *AnthropicProvider) Stream(ctx context.Context, req core.Request) (core.Stream, error) {
 	spec := p.requestSpec(req)
 	if p.client.bedrock == nil {
-		if req.MaxOutputTokens <= 0 && p.client.usesPublicAPI() {
+		if key := p.client.catalogCacheKey(); req.MaxOutputTokens <= 0 && key != "" {
 			// Thinking and the reply share this ceiling, including on models
 			// like Opus 5.5 that think even when the thinking field is omitted.
-			req.MaxOutputTokens = p.defaultOutputTokenLimit(ctx, spec.model)
+			req.MaxOutputTokens = p.defaultOutputTokenLimit(ctx, key, spec.model)
 		} else {
 			req.MaxOutputTokens = anthropicClampOutputTokens(req.MaxOutputTokens, spec.model)
 		}
@@ -339,6 +339,9 @@ func (p *AnthropicProvider) streamStandardForModel(ctx context.Context, req core
 		}
 		applyAnthropicThinking(params, req.MaxOutputTokens, thinkingBudget, useAdaptive, includeOutputEffort && anthropicSupportsEffort(model, "max"), true)
 		applyAnthropicEffort(params, reasoningEffort)
+		if req.DebugRaw {
+			runtimeoutput.Printf("Anthropic wire request: model=%s max_tokens=%d\n", params.Model, params.MaxTokens)
+		}
 
 		if req.Debug {
 			runtimeoutput.Printf("%s\n", "=== DEBUG: Anthropic Stream Request ===")
@@ -387,6 +390,9 @@ func (p *AnthropicProvider) streamWithSearch(ctx context.Context, req core.Reque
 		}
 		applyAnthropicThinking(params, req.MaxOutputTokens, spec.thinkingBudget, spec.adaptive, anthropicSupportsEffort(model, "max"), false)
 		applyAnthropicEffort(params, reasoningEffort)
+		if req.DebugRaw {
+			runtimeoutput.Printf("Anthropic wire request: model=%s max_tokens=%d\n", params.Model, params.MaxTokens)
+		}
 
 		if req.Debug {
 			runtimeoutput.Printf("%s\n", "=== DEBUG: Anthropic Stream Request (search) ===")

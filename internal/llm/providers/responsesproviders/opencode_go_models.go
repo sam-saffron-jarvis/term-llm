@@ -27,14 +27,14 @@ const (
 	opencodeGoInferenceBaseURL = "https://opencode.ai/inference/go/v1"
 	opencodeGoCatalogURL       = "https://models.opencode.ai/api.json"
 	opencodeGoDisplayName      = "OpenCode Go"
-	// v3 invalidates catalog caches that routed Google-family models to
-	// Chat Completions before the Gemini protocol was recognized.
-	opencodeGoModelCacheKey      = "opencode-go-v3"
+	// v4 refreshes metadata for scoped routes that previously used availability only.
+	opencodeGoModelCacheKey      = "opencode-go-v4"
 	opencodeGoCatalogProviderKey = "opencode-go"
 	opencodeGoModelCacheTTL      = 5 * time.Minute
 	opencodeGoRefreshBackoff     = 30 * time.Second
 	opencodeGoRefreshTimeout     = 10 * time.Second
 	opencodeGoOutputTokenMax     = 32_000
+	opencodeGoHaiku55            = "claude-haiku-5-5"
 )
 
 type opencodeGoProtocol string
@@ -48,7 +48,6 @@ const (
 
 type opencodeGoModel struct {
 	ModelInfo
-	OutputLimit      int
 	Protocol         opencodeGoProtocol
 	ReasoningBudgets map[string]int64
 	Deprecated       bool
@@ -300,7 +299,13 @@ func fetchOpenCodeGoModels(ctx context.Context, client *http.Client, apiKey, bas
 			// catalog mirror gets no client or session attribution.
 			applyOpenCodeGoAttributionHeaders(req.Header, "")
 		}
-		resp, err := proxyclient.Do(client, req)
+		var resp *http.Response
+		if opencodeAPI {
+			resp, err = proxyclient.Do(client, req)
+		} else {
+			// Public metadata must not inherit any scoped proxy binding.
+			resp, err = client.Do(req)
+		}
 		if err != nil {
 			ch <- result{err: err}
 			return
@@ -520,8 +525,7 @@ func readCachedOpenCodeGoModels(cacheKey string) (cachedOpenCodeGoCatalog, error
 	models := make(map[string]opencodeGoModel, len(entry.ModelInfos))
 	for _, item := range entry.ModelInfos {
 		model := opencodeGoModel{
-			ModelInfo:        ModelInfo{ID: item.ID, DisplayName: item.DisplayName, Created: item.Created, OwnedBy: item.OwnedBy, InputLimit: item.InputLimit, InputPrice: item.InputPrice, OutputPrice: item.OutputPrice, ReasoningEfforts: append([]string(nil), item.ReasoningEfforts...)},
-			OutputLimit:      item.OutputLimit,
+			ModelInfo:        ModelInfo{ID: item.ID, DisplayName: item.DisplayName, Created: item.Created, OwnedBy: item.OwnedBy, InputLimit: item.InputLimit, OutputLimit: item.OutputLimit, InputPrice: item.InputPrice, OutputPrice: item.OutputPrice, ReasoningEfforts: append([]string(nil), item.ReasoningEfforts...)},
 			Protocol:         opencodeGoProtocol(item.Protocol),
 			ReasoningBudgets: cloneOpenCodeGoReasoningBudgets(item.ReasoningBudgets),
 			Deprecated:       item.Deprecated,

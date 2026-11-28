@@ -14,6 +14,7 @@ import (
 	"github.com/term-llm/term-llm/internal/config"
 	"github.com/term-llm/term-llm/internal/llm/providers/anthropic"
 	"github.com/term-llm/term-llm/internal/llm/providers/gemini"
+	"github.com/term-llm/term-llm/internal/proxyclient"
 	"github.com/term-llm/term-llm/internal/runtimeoutput"
 )
 
@@ -87,6 +88,9 @@ func NewOpenCodeGoProviderWithBaseURL(apiKey, model, baseURL string) *OpenCodeGo
 	catalogURL := ""
 	if strings.TrimSpace(baseURL) == "" {
 		baseURL = opencodeGoBaseURL
+		catalogURL = opencodeGoCatalogURL
+	} else if binding, ok := proxyclient.Lookup(baseURL); ok && proxyclient.SameRoot(baseURL, binding.Root) {
+		// The scope still controls availability and all inference endpoints.
 		catalogURL = opencodeGoCatalogURL
 	}
 	return newOpenCodeGoProvider(apiKey, model, baseURL, catalogURL, defaultHTTPClient)
@@ -273,30 +277,7 @@ func (p *OpenCodeGoProvider) Stream(ctx context.Context, req Request) (Stream, e
 
 	switch metadata.Protocol {
 	case opencodeGoProtocolMessages:
-		// OpenCode Go does not expose Anthropic's native server tools; search and
-		// fetch continue to use term-llm's portable tool loop.
-		req.Search = false
-		reasoningEffort := strings.TrimSpace(req.ReasoningEffort)
-		budget := metadata.ReasoningBudgets[strings.ToLower(reasoningEffort)]
-		if budget > 0 {
-			reasoningEffort = ""
-		}
-		// The Messages API requires max_tokens. Match OpenCode's 32K default cap
-		// rather than sending either Anthropic's generic fallback or a potentially
-		// enormous catalog output limit.
-		if req.MaxOutputTokens == 0 {
-			req.MaxOutputTokens = metadata.OutputLimit
-			if req.MaxOutputTokens <= 0 || req.MaxOutputTokens > opencodeGoOutputTokenMax {
-				req.MaxOutputTokens = opencodeGoOutputTokenMax
-			}
-		}
-		if req.DebugRaw {
-			DebugRawSection(true, "OpenCode Go Routed Request", fmt.Sprintf("protocol: messages\nmodel: %s\nreasoning_effort: %s\nthinking_budget: %d\nmax_output_tokens: %d", req.Model, req.ReasoningEffort, budget, req.MaxOutputTokens))
-		}
-		// Budget-based non-Anthropic models accept `thinking`, but reject Claude's
-		// separate `output_config.effort` field.
-		return p.messages.StreamWithSpec(ctx, req, anthropic.ModelSpec{Model: req.Model, Effort: reasoningEffort, ThinkingBudget: budget}, false,
-			http.Header{openCodeGoClientHeader: {openCodeGoClientID}, openCodeGoSessionHeader: {sessionID}})
+		return p.streamMessages(ctx, req, metadata, sessionID)
 	case opencodeGoProtocolResponses:
 		return p.streamResponses(ctx, req, sessionID)
 	case opencodeGoProtocolGemini:
@@ -312,6 +293,30 @@ func (p *OpenCodeGoProvider) Stream(ctx context.Context, req Request) (Stream, e
 	default:
 		return p.chat.Stream(withOpenCodeGoSession(ctx, sessionID), req)
 	}
+}
+
+func (p *OpenCodeGoProvider) streamMessages(ctx context.Context, req Request, model opencodeGoModel, sessionID string) (Stream, error) {
+	// Use portable search and fetch tools on the Go gateway.
+	req.Search = false
+	effort := strings.ToLower(strings.TrimSpace(req.ReasoningEffort))
+	budget := model.ReasoningBudgets[effort]
+	isHaiku55 := model.ID == opencodeGoHaiku55 && model.Available
+	if budget > 0 {
+		effort = ""
+	}
+	if req.MaxOutputTokens <= 0 {
+		req.MaxOutputTokens = model.OutputLimit
+		if req.MaxOutputTokens <= 0 || (!isHaiku55 && req.MaxOutputTokens > opencodeGoOutputTokenMax) {
+			req.MaxOutputTokens = opencodeGoOutputTokenMax
+		}
+	}
+	if req.DebugRaw {
+		DebugRawSection(true, "OpenCode Go Routed Request", fmt.Sprintf("protocol: messages\nmodel: %s\nreasoning_effort: %s\nthinking_budget: %d\nmax_output_tokens: %d", req.Model, effort, budget, req.MaxOutputTokens))
+	}
+	// Haiku uses adaptive thinking. Keep budget-based gateway models on their
+	// existing wire format; they don't accept Claude's effort configuration.
+	return p.messages.StreamWithSpec(ctx, req, anthropic.ModelSpec{Model: req.Model, Effort: effort, ThinkingBudget: budget, Adaptive: isHaiku55}, false,
+		http.Header{openCodeGoClientHeader: {openCodeGoClientID}, openCodeGoSessionHeader: {sessionID}})
 }
 
 func splitOpenCodeGoModelEffort(model string, metadata opencodeGoModel) (string, string) {
