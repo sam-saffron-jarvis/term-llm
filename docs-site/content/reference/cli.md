@@ -128,6 +128,7 @@ Ask a question and stream the answer
 | `--read-dir` | stringArray | Directories for read_file/grep/glob/view_image tools (repeatable) |
 | `--resume, -r` | string | Continue a session (empty for most recent, or session ID) |
 | `--search, -s` | bool | Enable web search for current information |
+| `--session-origin` | string | Origin label recorded on new sessions (default tui) |
 | `--shell-allow` | stringArray | Shell command patterns to allow (repeatable, glob syntax) |
 | `--skills` | string | Skills: names to preload, 'name,+' to preload with discovery, 'all'/'*' for discovery, or 'none' to disable |
 | `--stop-when` | string | Progressive stop condition: done or timeout (defaults to done in progressive mode) |

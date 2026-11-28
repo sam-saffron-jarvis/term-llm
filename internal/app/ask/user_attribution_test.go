@@ -38,7 +38,7 @@ func TestAskUserPersistsAcrossAgentAndContinuation(t *testing.T) {
 			deps := testDependencies(&output, &output)
 			deps.SessionStore.DBPath = path
 			deps.NewProvider = func(*config.Config, bool) (core.Provider, error) { return provider, nil }
-			opts := Options{User: "  canary nick kroll  ", Text: true, Porcelain: true, MaxTurns: 5}
+			opts := Options{User: "  canary nick kroll  ", SessionOrigin: "my-bot", Text: true, Porcelain: true, MaxTurns: 5}
 			if agent {
 				dir := filepath.Join(t.TempDir(), "attribution-agent")
 				if err := os.MkdirAll(dir, 0700); err != nil {
@@ -71,7 +71,7 @@ func TestAskUserPersistsAcrossAgentAndContinuation(t *testing.T) {
 			}
 			opts.Resume = id
 			opts.Changed.Resume = true
-			opts.User = "canary second user"
+			opts.User, opts.SessionOrigin = "canary second user", "" // resume keeps the stored origin
 			if err := Run(ctx, []string{"second question"}, opts, deps); err != nil {
 				t.Fatalf("continued ask: %v\n%s", err, output.String())
 			}
@@ -101,7 +101,7 @@ func TestAskUserPersistsAcrossAgentAndContinuation(t *testing.T) {
 				}
 			}
 			sess, err := store.Get(ctx, id)
-			if err != nil || sess.CreatedBy != want[0] {
+			if err != nil || sess.CreatedBy != want[0] || sess.Origin != "my-bot" {
 				t.Fatalf("starter=%+v %v", sess, err)
 			}
 			participants, err := store.SessionParticipants(ctx, []string{id})

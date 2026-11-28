@@ -50,7 +50,8 @@ var (
 	// Skills flag
 	askSkills string
 	// Session resume flag
-	askResume string
+	askResume        string
+	askSessionOrigin string
 )
 
 var askCmd = &cobra.Command{
@@ -129,6 +130,7 @@ func init() {
 	askCmd.Flags().StringVar(&askInlineMaxBytes, "inline-max-bytes", "", "Embed stdin/-f text up to this size inline instead of staging it for tools (e.g. 512K, 2M; overrides ask.stdin_inline_max_bytes)")
 
 	askCmd.Flags().StringVar(&askUser, "user", "", "Attribute new user turns to this name (display-only; not sent to the model)")
+	askCmd.Flags().StringVar(&askSessionOrigin, "session-origin", "", "Origin label recorded on new sessions (default tui)")
 
 	// Session resume flag - NoOptDefVal allows --resume without a value
 	askCmd.Flags().StringVarP(&askResume, "resume", "r", "", "Continue a session (empty for most recent, or session ID)")
@@ -147,6 +149,7 @@ func runAsk(cmd *cobra.Command, args []string) error {
 func captureAskInvocation(cmd *cobra.Command) (ask.Options, ask.Dependencies) {
 	opts := ask.Options{
 		User:            askUser,
+		SessionOrigin:   askSessionOrigin,
 		Debug:           askDebug,
 		Search:          askSearch,
 		NoSearch:        askNoSearch,

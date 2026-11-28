@@ -27,7 +27,7 @@ type preparedAskConversation struct {
 
 // prepareAskConversation establishes/refreshes durable session inputs and then
 // projects system, active history, grounding, and the new user message in order.
-func prepareAskConversation(ctx context.Context, selected appruntime.ModelSelection, provider core.Provider, agent *agents.Agent, store session.Store, sess *session.Session, sessionID string, resuming bool, settings appserve.SessionSettings, ticket *appserve.SessionInputTicket, basePrompt string, userMessage core.Message, approval tools.ApprovalMode) (preparedAskConversation, error) {
+func prepareAskConversation(ctx context.Context, selected appruntime.ModelSelection, provider core.Provider, agent *agents.Agent, store session.Store, sess *session.Session, sessionID string, resuming bool, settings appserve.SessionSettings, ticket *appserve.SessionInputTicket, basePrompt string, userMessage core.Message, approval tools.ApprovalMode, origin session.SessionOrigin) (preparedAskConversation, error) {
 	if !resuming && store != nil {
 		if sessionID == "" {
 			sessionID = session.NewID()
@@ -43,7 +43,7 @@ func prepareAskConversation(ctx context.Context, selected appruntime.ModelSelect
 			agentName = agents.Reference(agent)
 		}
 		now := time.Now()
-		sess = &session.Session{ID: sessionID, Provider: provider.Name(), ProviderKey: selected.Provider, Model: model, Mode: session.ModeAsk, Agent: agentName, CreatedAt: now, UpdatedAt: now, Search: settings.Search, Tools: settings.Tools, MCP: settings.MCP, ApprovalMode: runapproval.ForColdPersistence(approval), Status: session.StatusActive}
+		sess = &session.Session{ID: sessionID, Provider: provider.Name(), ProviderKey: selected.Provider, Model: model, Mode: session.ModeAsk, Origin: origin, Agent: agentName, CreatedAt: now, UpdatedAt: now, Search: settings.Search, Tools: settings.Tools, MCP: settings.MCP, ApprovalMode: runapproval.ForColdPersistence(approval), Status: session.StatusActive}
 		sess.CWD = settings.PrimaryWorkspace
 		_ = store.Create(ctx, sess)
 	}

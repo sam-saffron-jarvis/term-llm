@@ -16,6 +16,7 @@ import (
 // Options is the invocation-scoped snapshot of ask flags.
 type Options struct {
 	User                string
+	SessionOrigin       string
 	Debug               bool
 	Search              bool
 	NoSearch            bool

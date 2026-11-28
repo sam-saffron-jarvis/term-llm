@@ -292,7 +292,7 @@ func Run(ctx context.Context, args []string, opts Options, deps Dependencies) er
 	if selectedInputs == nil {
 		settings.SystemPrompt = appserve.InjectSkillsMetadata(settings.SystemPrompt, skillsSetup)
 	}
-	preparedConversation, err := prepareAskConversation(ctx, askSelected, provider, agent, store, sess, sessionID, resuming, settings, inputTicket, baseInputPrompt, preparedInput.Message, resolvedApproval.Mode)
+	preparedConversation, err := prepareAskConversation(ctx, askSelected, provider, agent, store, sess, sessionID, resuming, settings, inputTicket, baseInputPrompt, preparedInput.Message, resolvedApproval.Mode, session.SessionOrigin(opts.SessionOrigin))
 	if err != nil {
 		return err
 	}
