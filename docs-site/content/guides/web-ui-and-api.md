@@ -574,12 +574,20 @@ browser URL**; the backend still binds to loopback by default. Remote examples:
 term-llm serve web --auth passkey --public-url https://chat.example.com/ui/
 ```
 
-The non-root mount path (such as `/ui/`) is derived from the public URL. An
-explicit `--base-path`, or `serve.base_path` from configuration when the flag is
-absent, must match it. Changing the hostname changes the passkey
-identity. Request Host/forwarding headers never determine the authentication
-origin. Behind a proxy, `--passkey-trusted-proxy IP_OR_CIDR` can explicitly trust
-its forwarded client address for rate limiting; this does not trust its origin.
+The public URL must include a non-root mount path (such as `/ui/`). That path
+must match `--base-path` if supplied, or `serve.base_path` otherwise. The server
+checks the default `/ui` even if `serve.base_path` is omitted from the config
+file. For a public URL ending in `/chat/`, pass `--base-path /chat` or set
+`serve.base_path: /chat` in your config:
+
+```bash
+term-llm serve web --auth passkey --public-url http://localhost:8080/chat/ --base-path /chat
+```
+
+Changing the hostname changes the passkey identity. Request Host/forwarding
+headers never determine the authentication origin. Behind a proxy,
+`--passkey-trusted-proxy IP_OR_CIDR` can explicitly trust its forwarded client
+address for rate limiting; this does not trust its origin.
 
 This initial mode supports **`serve web` alone, direct same-origin access**.
 Additional platforms, Hub integration, and `--cors-origin` are not
